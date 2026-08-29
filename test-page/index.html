@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SIH 26171 — coordinate calibration target</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    background: #fff;
+    color: #111;
+  }
+
+  /* Anchors at exact viewport coordinates. If an overlay box does not sit
+     precisely on one of these, the derived scale is wrong. */
+  .anchor {
+    position: fixed;
+    width: 100px;
+    height: 40px;
+    background: #d92;
+    color: #000;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+  #a-tl { top: 0;    left: 0; }
+  #a-tr { top: 0;    right: 0; }
+  #a-bl { bottom: 0; left: 0; }
+  #a-br { bottom: 0; right: 0; }
+  #a-c  { top: 50%;  left: 50%; transform: translate(-50%, -50%); background: #2a9; }
+
+  /* A 1px hairline grid every 100px. Any accumulated scaling error shows up
+     as overlay boxes drifting away from these lines toward the right edge —
+     which is exactly the failure mode that multiplying by devicePixelRatio
+     produces on fractional-DPR displays. */
+  .grid {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      repeating-linear-gradient(to right, rgba(0,0,0,.16) 0 1px, transparent 1px 100px),
+      repeating-linear-gradient(to bottom, rgba(0,0,0,.16) 0 1px, transparent 1px 100px);
+    z-index: 1;
+  }
+
+  main { position: relative; z-index: 2; padding: 60px 24px 24px; max-width: 720px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 12px; margin: 0 0 24px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; color: #888;
+       margin: 28px 0 10px; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  button, input, select, textarea {
+    font: inherit; padding: 7px 10px; border: 1px solid #999; background: #fff;
+  }
+  button { background: #111; color: #fff; border-color: #111; cursor: pointer; }
+  label { display: block; font-size: 12px; color: #555; margin-bottom: 3px; }
+  .field { margin-bottom: 12px; }
+
+  .tiny { width: 5px; height: 5px; background: #c33; display: inline-block; }
+  .hidden-display { display: none; }
+  .hidden-vis { visibility: hidden; }
+  .transparent { opacity: 0.02; }
+  .offscreen { position: absolute; left: -9999px; }
+
+  table { border-collapse: collapse; font-size: 12px; }
+  td, th { border: 1px solid #ccc; padding: 5px 9px; }
+</style>
+</head>
+<body>
+
+<div class="grid"></div>
+
+<div class="anchor" id="a-tl">0,0</div>
+<div class="anchor" id="a-tr">TOP-RIGHT</div>
+<div class="anchor" id="a-bl">BOTTOM-LEFT</div>
+<div class="anchor" id="a-br">BOT-RIGHT</div>
+<div class="anchor" id="a-c">CENTER</div>
+
+<main>
+  <h1>Coordinate calibration target</h1>
+  <p class="sub">
+    Capture this page from the side panel. The five anchors are pinned to exact
+    viewport positions; overlay boxes must cover them precisely at 100% zoom,
+    at 80%, at 150%, and on a HiDPI display.
+  </p>
+
+  <h2>Interactive elements</h2>
+  <div class="row">
+    <button id="submit-btn">Submit form</button>
+    <button aria-label="Close dialog">×</button>
+    <a href="#anchor-target">A link with text</a>
+  </div>
+
+  <div class="field">
+    <label for="full-name">Full name</label>
+    <input id="full-name" type="text" placeholder="Enter your name" />
+  </div>
+
+  <div class="field">
+    <label for="state">State</label>
+    <select id="state">
+      <option>Andhra Pradesh</option>
+      <option>Karnataka</option>
+      <option>Telangana</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="notes">Notes</label>
+    <textarea id="notes" rows="3" placeholder="Anything else"></textarea>
+  </div>
+
+  <div class="row">
+    <label><input type="checkbox" /> I agree</label>
+    <label><input type="radio" name="r" /> Option A</label>
+    <label><input type="radio" name="r" /> Option B</label>
+  </div>
+
+  <div class="row">
+    <div role="button" tabindex="0">ARIA button (div)</div>
+    <span role="link" tabindex="0">ARIA link (span)</span>
+  </div>
+
+  <h2>Should be EXCLUDED from the snapshot</h2>
+  <p>
+    Five rejection cases. If any appears in the element list, the visibility
+    filter has a bug.
+  </p>
+  <div class="row">
+    <span class="tiny" title="5px — below MIN_DIMENSION"></span>
+    <button class="hidden-display">display:none</button>
+    <button class="hidden-vis">visibility:hidden</button>
+    <button class="transparent">opacity 0.02</button>
+    <button class="offscreen">positioned off-screen</button>
+  </div>
+
+  <h2>Text blocks</h2>
+  <table>
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>Reference</td><td>SIH-26171</td></tr>
+    <tr><td>Organization</td><td>ISRO / Dept. of Space</td></tr>
+  </table>
+
+  <ul>
+    <li>List items are collected as static text</li>
+    <li id="anchor-target">Headings, paragraphs, cells, labels too</li>
+  </ul>
+
+  <h2>Below the fold</h2>
+  <p style="height:1200px; padding-top:20px; color:#aaa;">
+    Everything past the viewport edge must be dropped, not translated by the
+    scroll offset. Scroll down and re-capture: the anchors stay pinned, and
+    the element list should change to whatever is now on screen.
+  </p>
+</main>
+
+</body>
+</html>

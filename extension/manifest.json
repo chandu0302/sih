@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "PrivacyLens — SIH 26171",
+  "version": "0.1.0",
+  "description": "On-device visual perception for lightweight browser agents. Phase 1: capture and coordinate alignment.",
+
+  "permissions": ["activeTab", "scripting", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+
+  "action": {
+    "default_title": "Open PrivacyLens"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["content/index.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

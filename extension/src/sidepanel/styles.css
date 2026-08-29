@@ -1,0 +1,321 @@
+/**
+ * SIH 26171 — side panel.
+ *
+ * Design direction: a measurement instrument, not a dashboard. The panel's
+ * single job is to let you verify that computed boxes land exactly on their
+ * elements, so the visual language is borrowed from print registration and
+ * optical alignment: hairline rules, corner ticks, monospaced readouts.
+ *
+ * Signature element: the registration ticks on every overlay box. Alignment
+ * is the thesis of Phase 1, so the marks that prove alignment are the thing
+ * the panel is remembered by.
+ */
+
+:root {
+  /* Ground: deep blue-black. Not pure black — keeps the screenshot, which is
+     usually a bright web page, from vibrating against the chrome. */
+  --ink: #0e1620;
+  --panel: #16212d;
+  --panel-hi: #1d2b39;
+  --rule: #263542;
+
+  --paper: #e6edf3;
+  --muted: #7b8fa1;
+  --faint: #4d6070;
+
+  /* Two signals only: interactive vs. static. A third color would imply a
+     third class of thing, and there isn't one yet. Phase 2's PII types get
+     their own scale. */
+  --signal: #4fd1e0;
+  --signal-soft: rgba(79, 209, 224, 0.14);
+  --static: #e9a73c;
+  --static-soft: rgba(233, 167, 60, 0.12);
+  --alert: #f2603c;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
+  --pad: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- */
+/* Header                                                            */
+/* ---------------------------------------------------------------- */
+
+.header {
+  padding: var(--pad);
+  border-bottom: 1px solid var(--rule);
+  flex: 0 0 auto;
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 0 0 2px;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+
+.capture-btn {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--signal);
+  color: var(--ink);
+  border: none;
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.capture-btn:hover:not(:disabled) { background: #6bdcea; }
+.capture-btn:disabled { opacity: 0.5; cursor: default; }
+.capture-btn:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- */
+/* Readout strip — derived scale, the number that proves the math     */
+/* ---------------------------------------------------------------- */
+
+.readout {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid var(--rule);
+  flex: 0 0 auto;
+}
+
+.readout-cell {
+  padding: 8px var(--pad);
+  border-right: 1px solid var(--rule);
+}
+
+.readout-cell:last-child { border-right: none; }
+
+.readout-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  display: block;
+}
+
+.readout-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+}
+
+.readout-value.warn { color: var(--alert); }
+
+/* ---------------------------------------------------------------- */
+/* Stage — screenshot + overlay                                      */
+/* ---------------------------------------------------------------- */
+
+.scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.stage {
+  position: relative;
+  margin: var(--pad);
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  line-height: 0;
+}
+
+.stage img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* A box is a hairline outline plus four registration ticks. The outline
+   alone reads as a highlight; the ticks read as a measurement, which is
+   what this actually is. */
+.box {
+  position: absolute;
+  border: 1px solid var(--signal);
+  background: var(--signal-soft);
+  transition: background 100ms ease;
+}
+
+.box.static {
+  border-color: var(--static);
+  background: var(--static-soft);
+}
+
+.box.selected {
+  background: rgba(79, 209, 224, 0.34);
+  box-shadow: 0 0 0 1px var(--paper);
+}
+
+.tick {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border: 0 solid var(--signal);
+}
+
+.box.static .tick { border-color: var(--static); }
+
+.tick.tl { top: -1px; left: -1px; border-top-width: 2px; border-left-width: 2px; }
+.tick.tr { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
+.tick.bl { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
+.tick.br { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+
+/* ---------------------------------------------------------------- */
+/* Element list                                                      */
+/* ---------------------------------------------------------------- */
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0 var(--pad) 6px;
+}
+
+.section-head h2 {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 500;
+  margin: 0;
+}
+
+.count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.list { list-style: none; margin: 0; padding: 0 var(--pad) var(--pad); }
+
+.row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.row:hover, .row.selected { background: var(--panel-hi); }
+.row:focus-visible { outline: 1px solid var(--signal); outline-offset: -1px; }
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--signal);
+}
+
+.dot.static { background: var(--static); }
+
+.row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-name .unnamed { color: var(--faint); font-style: italic; }
+
+.row-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- */
+/* States                                                            */
+/* ---------------------------------------------------------------- */
+
+.notice {
+  margin: var(--pad);
+  padding: 10px 12px;
+  border-left: 2px solid var(--alert);
+  background: rgba(242, 96, 60, 0.08);
+  font-size: 12px;
+}
+
+.notice h3 {
+  margin: 0 0 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notice p { margin: 0; color: var(--muted); }
+
+.empty {
+  padding: 32px var(--pad);
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.empty code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--signal);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
