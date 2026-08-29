@@ -30,11 +30,11 @@ Then in Chrome:
 1. Go to `chrome://extensions`
 2. Enable **Developer mode** (top right)
 3. **Load unpacked** → select `extension/dist`
-4. Open any normal website tab, click the extension icon, press **Capture**
+4. Open any normal **http/https** website tab, click the extension icon, press **Capture**
 
-To verify alignment precisely, open `test-page/index.html` in a tab — it places
-elements at known pixel offsets so misalignment is obvious rather than a
-judgement call.
+Capture currently works on `http://` and `https://` pages only — see
+**Known gaps** below for why `file://` (including the bundled test page) needs
+an extra step, and **Troubleshooting** if Capture reports an access error.
 
 ## Commands
 
@@ -61,15 +61,38 @@ whole reason we derive scale from the returned image rather than trusting
 
 ## Architecture notes worth knowing
 
-**Permissions are deliberately minimal.** The extension declares no content
-script and holds no host permissions. It uses `activeTab` plus on-demand
-injection via `chrome.scripting.executeScript`, so it can only read a page at
-the moment you invoke it. For a privacy project, asking for permanent access to
-every site at install time is the wrong first impression.
+**Permissions ended up broader than the original activeTab-only plan, and
+here's the honest reason why.** The manifest declares:
 
-*Consequence to plan for:* `activeTab` is revoked on navigation. Phase 5's agent
-loop navigates, so it will need `optional_host_permissions` requested at
-runtime — keeping the install-time permission list clean.
+```json
+"permissions": ["activeTab", "scripting", "sidePanel"],
+"host_permissions": ["http://*/*", "https://*/*"]
+```
+
+> Note: your local manifest may instead have `"host_permissions": ["<all_urls>"]`
+> — that's fine too, it's the broader superset and works the same way. Either
+> form fixes the same underlying issue described below.
+
+The original design used `activeTab` alone — granted on the toolbar-icon
+click, nothing at install, the tightest possible footprint. In practice this
+failed specifically **because of the side panel**: opening a side panel
+consumes the icon click, so `activeTab`'s grant doesn't reliably reach the tab
+by the time Capture runs. This is a known, reported Chromium behavior
+(`activeTab` behaves differently in a side panel than in a popup — see
+[chromium issue 40916430](https://issues.chromium.org/issues/40916430)), not
+something specific to this codebase. The documented workaround is a standing
+host permission, which is what's declared above.
+
+Net effect: install-time permissions are still minimal (no `tabs`, so no
+"read your browsing history" warning), but the extension does ask for
+http/https access up front rather than purely on-demand. Revisit this in
+Phase 6 — Chrome's per-site access controls (user can scope it to specific
+sites post-install) partially recover the tighter story even with this
+manifest.
+
+*Consequence to plan for:* Phase 5's agent loop navigates across pages; the
+current host_permissions already cover that, so no further change needed
+there.
 
 **Capture order is the correctness story.** Read the DOM, capture pixels, then
 re-probe the viewport to detect whether the page moved in between. A drift
@@ -82,35 +105,54 @@ one that yields an isotropic frame. Whether `captureVisibleTab` includes the
 scrollbar varies with overlay-scrollbar settings and Chrome version; guessing
 wrong is a silent ~15px horizontal error. See `src/lib/coords.ts`.
 
+**Active-tab resolution ignores DevTools/panel focus.** `getActiveTab()` in
+the service worker does *not* use `chrome.tabs.query({active, currentWindow})`
+— when the service-worker DevTools or the side panel itself has focus,
+`currentWindow` can resolve to *that* window instead of your browser tab,
+which silently captures the wrong thing (or a `chrome://` page). It resolves
+the last-focused **normal** browser window instead, with a fallback scan.
+See `src/background/service-worker.ts`.
+
 **The build is hand-rolled on purpose.** MV3 needs three outputs with
 incompatible module formats (ES-module page, ES-module worker, IIFE content
 script). `build.mjs` runs three sequential Vite builds — about 40 lines, fully
 under our control, no plugin to break the week before the demo.
+
+## Troubleshooting
+
+**"No access to this tab yet"** — you clicked Capture while a `chrome://`
+page, the extensions page, or DevTools had focus. Switch to a normal http/https
+tab, make sure no DevTools window is focused, and capture again.
+
+**"This is a browser page and cannot be captured"** — same cause, cleaner
+message. Capture only works on real websites.
+
+**Capture fails only on the local test page** — expected. `file://` pages
+aren't covered by the `http://*/*` / `https://*/*` host permissions, so
+`test-page/index.html` won't load via `Capture` as-is. Two ways around it,
+neither requires broadening permissions:
+- Serve it instead of opening it: `npx serve test-page` and capture the
+  `http://localhost:...` URL it gives you.
+- Or just verify coordinate alignment on any real site (Wikipedia works well)
+  — the test page's real purpose is Phase 2's PII-precision fixture, not this
+  check.
+
+**Raw error text, if the friendly message isn't enough** — open the extension
+card at `chrome://extensions` → **"service worker"** under Inspect views →
+Console tab → Capture. The `[SIH] capture failed …` line there is the actual
+Chrome API error.
 
 ## Known gaps (deliberate, revisited later)
 
 - **Occlusion is not modelled.** An element visually behind another is still
   reported as visible. Matters for redaction in Phase 3.
 - **Selectors are best-effort.** Hardened in Phase 5, when actions depend on them.
+- **`file://` capture isn't wired up.** See Troubleshooting above — serve the
+  test page over http instead, or add `file:///*` host permission + file
+  access if you specifically need it later.
 - **Cross-origin iframes are not traversed.** Their contents are invisible to
   the DOM track; the Phase 2 vision tracks are what will cover them.
 - **Chrome only.** Firefox's MV3 differs (no `chrome.sidePanel`, event pages
   rather than true service workers). Ported in Phase 6.
 
 ## Layout
-
-```
-extension/
-├── build.mjs              three-target MV3 build
-├── manifest.json
-└── src/
-    ├── types.ts           shared data contract
-    ├── lib/coords.ts      ← the coordinate contract; nothing else converts spaces
-    ├── lib/coords.test.ts
-    ├── lib/messaging.ts   typed cross-context protocol
-    ├── background/        capture coordinator (owns operation order)
-    ├── content/           injected snapshot (DOM traversal)
-    └── sidepanel/         React verification panel
-test-page/
-└── index.html             elements at known offsets
-```
