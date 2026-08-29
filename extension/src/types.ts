@@ -11,11 +11,16 @@
 export type PiiType =
   | 'FACE'
   | 'PASSWORD'
+  | 'CARD'
   | 'ID_NUMBER'
   | 'NAME'
   | 'EMAIL'
   | 'PHONE'
-  | 'ADDRESS';
+  | 'ADDRESS'
+  | 'URL'
+  | 'DATE'
+  | 'SECRET'
+  | 'OTHER';
 
 /** Which detector produced a box. Phase 2. */
 export type DetectionSource = 'DOM' | 'FACE_MODEL' | 'NER_MODEL';
@@ -41,6 +46,24 @@ export interface ImageBox {
   y: number;
   w: number;
   h: number;
+}
+
+/**
+ * One PII detection, already in canonical image-pixel space. Emitted by each
+ * detection track (DOM/regex, face model, NER) and merged before redaction.
+ */
+export interface DetectedBox {
+  imageBox: ImageBox;
+  piiType: PiiType;
+  /** e.g. 'aadhaar', 'pan', 'gstin' — set by the regex track. */
+  subtype?: string;
+  /** 0–1. */
+  confidence: number;
+  source: DetectionSource;
+  /** Set when found via a DOM element; ties back to SnapshotElement.nodeId. */
+  nodeId?: string;
+  /** The matched/covered text, for the redaction manifest. */
+  text?: string;
 }
 
 /**

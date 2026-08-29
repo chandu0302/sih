@@ -1,0 +1,95 @@
+/**
+ * SIH 26171 — checksum validator tests.
+ *
+ * These are the precision gate for the regex track. Every one of these
+ * patterns matches a shape that occurs innocently on real pages: a 12-digit
+ * order number is not an Aadhaar, and a 16-digit SKU is not a card. If a
+ * checksum silently returns true for everything, the track floods the
+ * redaction manifest with false positives and the utility score collapses —
+ * so each function is tested for REJECTION as carefully as acceptance.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { gstinChecksum, luhn, verhoeff } from './validators';
+
+describe('verhoeff — Aadhaar', () => {
+  // Checksum-valid under the Verhoeff scheme; not an issued Aadhaar number.
+  const VALID = '234123412346';
+
+  it('accepts a checksum-valid 12-digit number', () => {
+    expect(verhoeff(VALID)).toBe(true);
+  });
+
+  it('accepts the same number in the spaced 4-4-4 display format', () => {
+    expect(verhoeff('2341 2341 2346')).toBe(true);
+  });
+
+  it('rejects a wrong check digit', () => {
+    expect(verhoeff('234123412340')).toBe(false);
+  });
+
+  it('rejects a transposition — the error class Verhoeff exists to catch', () => {
+    // Luhn misses adjacent transpositions; Verhoeff does not.
+    expect(verhoeff('234123412364')).toBe(false);
+  });
+
+  it('rejects anything that is not exactly 12 digits', () => {
+    expect(verhoeff('23412341234')).toBe(false);
+    expect(verhoeff('2341234123467')).toBe(false);
+    expect(verhoeff('')).toBe(false);
+  });
+
+  it('rejects non-digit input rather than throwing', () => {
+    expect(verhoeff('2341234123AB')).toBe(false);
+  });
+});
+
+describe('luhn — card numbers', () => {
+  it('accepts a valid test card number', () => {
+    expect(luhn('4111111111111111')).toBe(true);
+  });
+
+  it('accepts it with the spacing a user would actually type', () => {
+    expect(luhn('4111 1111 1111 1111')).toBe(true);
+    expect(luhn('4111-1111-1111-1111')).toBe(true);
+  });
+
+  it('rejects a number with a bad check digit', () => {
+    expect(luhn('4111111111111112')).toBe(false);
+  });
+
+  it('rejects a 16-digit run that merely looks like a card', () => {
+    expect(luhn('1234567890123456')).toBe(false);
+  });
+
+  it('rejects lengths outside the issued-card range', () => {
+    expect(luhn('4111111')).toBe(false);
+    expect(luhn('41111111111111111111')).toBe(false);
+  });
+});
+
+describe('gstinChecksum', () => {
+  const VALID = '27AAPFU0939F1ZV';
+
+  it('accepts a valid GSTIN', () => {
+    expect(gstinChecksum(VALID)).toBe(true);
+  });
+
+  it('accepts lowercase input', () => {
+    expect(gstinChecksum(VALID.toLowerCase())).toBe(true);
+  });
+
+  it('rejects a wrong check character', () => {
+    expect(gstinChecksum('27AAPFU0939F1Z0')).toBe(false);
+  });
+
+  it('rejects a mutated body that keeps the original check character', () => {
+    expect(gstinChecksum('27AAPFU0939F1ZV'.replace('0939', '0938'))).toBe(false);
+  });
+
+  it('rejects structurally malformed input', () => {
+    expect(gstinChecksum('27AAPFU0939F1AV')).toBe(false); // 14th char must be Z
+    expect(gstinChecksum('AAPFU0939F1ZV')).toBe(false); // too short
+    expect(gstinChecksum('')).toBe(false);
+  });
+});
