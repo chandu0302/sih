@@ -148,8 +148,11 @@ function collectTextMatches(
     if (!text) continue;
 
     for (const pattern of PII_PATTERNS) {
-      // The registry's regexes are /g and therefore stateful; a stale
-      // lastIndex from the previous text node silently skips matches.
+      // The registry's regexes are /g and therefore stateful. Today the loop
+      // below always runs to exhaustion, and a failed exec() resets lastIndex
+      // on its own — so this is belt-and-braces. It stops being redundant the
+      // moment anyone adds an early `break` (a per-node match cap, say), at
+      // which point the stale index silently skips matches in the NEXT node.
       pattern.regex.lastIndex = 0;
 
       for (
