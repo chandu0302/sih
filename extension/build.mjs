@@ -18,7 +18,7 @@
 
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +27,57 @@ const outDir = resolve(root, 'dist');
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
+
+/**
+ * ONNX Runtime Web's WebAssembly binaries — ~40MB, and a BUILD INPUT rather
+ * than source. They are byte-for-byte reproducible from the onnxruntime-web
+ * version pinned in package-lock.json, so they are gitignored and staged here
+ * instead of being committed. Git stores large binaries badly: no delta
+ * compression, and every runtime bump would add another full copy to history
+ * that only a rewrite could remove.
+ *
+ * BOTH pairs are required. The .jsep build backs the WebGPU execution
+ * provider; the plain build backs the WASM fallback. Shipping only one makes
+ * the fallback in src/models/onnx-loader.ts useless on exactly the machines
+ * that need it — which would show up as a demo-day failure, not a build error.
+ *
+ * These are staged into public/ so the existing public/ -> dist/ copy below
+ * carries them to dist/ort/, which is where chrome.runtime.getURL('ort/') in
+ * configureOrtEnv() resolves. Those two paths must change together.
+ */
+const ORT_DIST = 'node_modules/onnxruntime-web/dist';
+const ORT_BINARIES = [
+  'ort-wasm-simd-threaded.wasm',
+  'ort-wasm-simd-threaded.mjs',
+  'ort-wasm-simd-threaded.jsep.wasm',
+  'ort-wasm-simd-threaded.jsep.mjs',
+];
+
+function copyOrtBinaries() {
+  const from = resolve(root, ORT_DIST);
+  const to = resolve(root, 'public/ort');
+
+  // Fail loudly. A missing binary silently yields a dist that loads fine and
+  // then dies at the first inference with a CDN fetch blocked by MV3's CSP —
+  // a confusing runtime error, far from its cause.
+  const missing = ORT_BINARIES.filter((file) => !existsSync(resolve(from, file)));
+  if (missing.length > 0) {
+    throw new Error(
+      `ORT wasm binaries not found in ${ORT_DIST}:\n` +
+        missing.map((file) => `  - ${file}`).join('\n') +
+        `\n\nRun \`npm install\` first. If they are installed but renamed, the ` +
+        `dist layout has changed from the pinned onnxruntime-web@1.29.0 — ` +
+        `update ORT_BINARIES here AND check wasmPaths in ` +
+        `src/models/onnx-loader.ts before shipping.`,
+    );
+  }
+
+  mkdirSync(to, { recursive: true });
+  for (const file of ORT_BINARIES) {
+    copyFileSync(resolve(from, file), resolve(to, file));
+  }
+  console.log(`[ort] staged ${ORT_BINARIES.length} wasm binaries -> public/ort/`);
+}
 
 /** Single-file bundle for the worker and content script. */
 const singleFile = (entry, outSubdir, fileName, format) => ({
@@ -76,6 +127,8 @@ await build(singleFile('src/background/service-worker.ts', 'background', 'servic
 
 console.log('[3/3] content script');
 await build(singleFile('src/content/index.ts', 'content', 'index.js', 'iife'));
+
+copyOrtBinaries();
 
 cpSync(resolve(root, 'manifest.json'), resolve(outDir, 'manifest.json'));
 if (existsSync(resolve(root, 'public'))) {

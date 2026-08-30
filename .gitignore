@@ -24,6 +24,9 @@ server/env/
 .mypy_cache/
 .ruff_cache/
 
+# ORT wasm binaries — copied from node_modules at build time, not committed
+extension/public/ort/
+
 # ── Model weights — large binaries, document the download in README ─
 extension/assets/models/*.onnx
 extension/assets/models/*.bin
