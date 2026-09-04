@@ -40,22 +40,35 @@ export interface ModelSpec {
 }
 
 /**
+ * chrome.runtime.getURL resolves relative to the extension id, which only
+ * exists in a real extension context. Guarded the same way onnx-loader.ts
+ * guards configureOrtEnv, so this module can be imported under plain
+ * node/vitest (no `chrome` global) without throwing at import time.
+ */
+function extensionUrl(path: string): string {
+  if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+    return chrome.runtime.getURL(path);
+  }
+  return path;
+}
+
+/**
  * Registered models, keyed by id.
  *
- * Empty until Track 2 and Track 3 land. Typed as Record<string, ModelSpec> per
- * the brief; getModel() below is what callers should use, so an unregistered
- * id fails loudly at the lookup rather than as `undefined.inputName` three
- * frames deeper.
+ * Typed as Record<string, ModelSpec> per the brief; getModel() below is what
+ * callers should use, so an unregistered id fails loudly at the lookup
+ * rather than as `undefined.inputName` three frames deeper.
  */
 export const MODELS: Record<string, ModelSpec> = {
-  // Track 2 fills this in:
-  // 'yolo-face': {
-  //   id: 'yolo-face',
-  //   url: chrome.runtime.getURL('models/yolov8n-face.onnx'),
-  //   inputName: 'images',
-  //   inputSize: 640,
-  //   runtime: 'onnx',
-  // },
+  // Values confirmed by loading the actual .onnx (session.inputNames /
+  // outputNames / dims), not guessed — see face-detector.ts's header comment.
+  'yolov11n-face': {
+    id: 'yolov11n-face',
+    url: extensionUrl('models/yolov11n-face.onnx'),
+    inputName: 'images',
+    inputSize: 640,
+    runtime: 'onnx',
+  },
 };
 
 /** Registered model ids. Handy for a warm-up pass or a diagnostics panel. */

@@ -155,4 +155,14 @@ Chrome API error.
 - **Chrome only.** Firefox's MV3 differs (no `chrome.sidePanel`, event pages
   rather than true service workers). Ported in Phase 6.
 
+## Models
+
+- **`extension/public/models/yolov11n-face.onnx`** — face detection (Track 2).
+  - Source: https://huggingface.co/AdamCodd/YOLOv11n-face-detection (`model.onnx`, fp32 — not `model_fp16.onnx`; the WASM fallback path needs fp32)
+  - sha256: `2dfe14171f5b76a05f9bcf0dac7f94b7bff4416b1f29eff7c9ef5830f51c5719`
+  - License: apache-2.0
+  - Base model: Ultralytics/YOLO11 (YOLOv11n)
+  - Dataset: WIDERFACE
+  - Confirmed by inspection (session.inputNames/outputNames/dims), not assumed: input `images` float32 `[1,3,640,640]` NCHW RGB; output `output0` float32 `[1,5,8400]` (`cx,cy,w,h,score` per anchor, score already sigmoid'd, no baked-in NMS).
+
 ## Layout
