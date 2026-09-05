@@ -32,6 +32,12 @@
   --static-soft: rgba(233, 167, 60, 0.12);
   --alert: #f2603c;
 
+  /* Track 3 (NER) is a genuinely different class of thing from the DOM
+     track's interactive/static — a model's guess, not a semantic fact read
+     off the page. Its own hue, distinct from signal/static/alert. */
+  --ner: #a78bfa;
+  --ner-soft: rgba(167, 139, 250, 0.16);
+
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 
@@ -194,6 +200,13 @@ body {
   box-shadow: 0 0 0 1px var(--paper);
 }
 
+.box.ner {
+  border-color: var(--ner);
+  background: var(--ner-soft);
+}
+
+.box.ner .tick { border-color: var(--ner); }
+
 .tick {
   position: absolute;
   width: 5px;
@@ -207,6 +220,13 @@ body {
 .tick.tr { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
 .tick.bl { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
 .tick.br { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+
+.ner-status {
+  margin: 0 var(--pad) var(--pad);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
 
 /* ---------------------------------------------------------------- */
 /* Element list                                                      */

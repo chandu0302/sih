@@ -79,6 +79,59 @@ function copyOrtBinaries() {
   console.log(`[ort] staged ${ORT_BINARIES.length} wasm binaries -> public/ort/`);
 }
 
+/**
+ * transformers.js (Track 3 / NER) bundles its OWN onnxruntime-web, at a
+ * different pinned version from the plain onnxruntime-web dependency Track 2
+ * uses (1.26.0-dev vs 1.29.0 as of writing — verify with `npm ls` if this
+ * throws). Mixing the two wasm sets is the silent-breakage kind of wrong, so
+ * this stages into its own public/ort-tfjs/ dir rather than reusing
+ * public/ort/. ner-detector.ts points env.backends.onnx.wasm.wasmPaths here.
+ *
+ * WHICH PAIR BACKS WEBGPU DIFFERS FROM TRACK 2. Track 2's 1.29.0 uses the
+ * `.jsep` build for its WebGPU/JSEP execution provider. This nested
+ * 1.26.0-dev build instead resolves WebGPU through the `.asyncify` build —
+ * confirmed empirically: the bundled sidepanel JS's dynamic import of
+ * `ort-wasm-simd-threaded.asyncify.mjs` 404's if only `.jsep` is staged
+ * (verified in the browser: "no available backend found... Failed to fetch
+ * dynamically imported module ... asyncify.mjs"). Do not assume `.jsep` is
+ * the WebGPU pair for every onnxruntime-web version — grep the built bundle
+ * (`grep -o 'ort-wasm-simd-threaded\.[a-z.]*mjs' dist/sidepanel/assets/*.js`)
+ * if this version bumps and breaks again.
+ *
+ * SHARED FILE — build.mjs is Track 2's file too. Flagged in the team channel
+ * per the brief; this only adds a second, independent staging step.
+ */
+const ORT_TFJS_DIST = 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist';
+const ORT_TFJS_BINARIES = [
+  'ort-wasm-simd-threaded.wasm',
+  'ort-wasm-simd-threaded.mjs',
+  'ort-wasm-simd-threaded.asyncify.wasm',
+  'ort-wasm-simd-threaded.asyncify.mjs',
+];
+
+function copyTransformersOrtBinaries() {
+  const from = resolve(root, ORT_TFJS_DIST);
+  const to = resolve(root, 'public/ort-tfjs');
+
+  const missing = ORT_TFJS_BINARIES.filter((file) => !existsSync(resolve(from, file)));
+  if (missing.length > 0) {
+    throw new Error(
+      `transformers.js's onnxruntime-web wasm binaries not found in ${ORT_TFJS_DIST}:\n` +
+        missing.map((file) => `  - ${file}`).join('\n') +
+        `\n\nRun \`npm install\` first. If they are installed but renamed, ` +
+        `@huggingface/transformers bumped its nested onnxruntime-web — update ` +
+        `ORT_TFJS_BINARIES here AND check wasmPaths in ` +
+        `src/detection/ner-detector.ts before shipping.`,
+    );
+  }
+
+  mkdirSync(to, { recursive: true });
+  for (const file of ORT_TFJS_BINARIES) {
+    copyFileSync(resolve(from, file), resolve(to, file));
+  }
+  console.log(`[ort-tfjs] staged ${ORT_TFJS_BINARIES.length} wasm binaries -> public/ort-tfjs/`);
+}
+
 /** Single-file bundle for the worker and content script. */
 const singleFile = (entry, outSubdir, fileName, format) => ({
   root,
@@ -129,6 +182,7 @@ console.log('[3/3] content script');
 await build(singleFile('src/content/index.ts', 'content', 'index.js', 'iife'));
 
 copyOrtBinaries();
+copyTransformersOrtBinaries();
 
 cpSync(resolve(root, 'manifest.json'), resolve(outDir, 'manifest.json'));
 if (existsSync(resolve(root, 'public'))) {

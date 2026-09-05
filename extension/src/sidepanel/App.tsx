@@ -12,7 +12,7 @@
  * building a redaction engine on a broken transform.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   clampToImage,
   createCoordinateFrame,
@@ -20,7 +20,9 @@ import {
   imageBoxToCssBox,
   type CoordinateFrame,
 } from '../lib/coords';
-import type { CapturePayload, CaptureResponse, SnapshotElement } from '../types';
+import { classifyText, warmNerModel } from '../detection/ner-detector';
+import { sendToContent } from '../lib/messaging';
+import type { CapturePayload, CaptureResponse, DetectedBox, SnapshotElement } from '../types';
 
 interface DrawnBox {
   nodeId: string;
@@ -41,11 +43,27 @@ export default function App() {
   const [displayScale, setDisplayScale] = useState(0);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  // Track 3 (NER) state. A NER failure must never break the capture view —
+  // see the round-trip effect below, which only ever sets nerError, never
+  // rethrows.
+  const [nerBoxes, setNerBoxes] = useState<DetectedBox[]>([]);
+  const [nerError, setNerError] = useState<string | null>(null);
+  /** Which payload the NER round trip has already run for — a ref, not
+   *  state, because it must not itself trigger a re-run when it changes. */
+  const nerRanFor = useRef<CapturePayload | null>(null);
+
+  useEffect(() => {
+    warmNerModel().catch((err) => console.error('[SIH] NER warm-up failed', err));
+  }, []);
+
       const capture = useCallback(async () => {
     setBusy(true);
     setError(null);
     setSelected(null);
-    setDisplayScale(0);
+    setDisplayScale(0);   
+    setNerBoxes([]);
+    setNerError(null);
+    nerRanFor.current = null;
 
     try {
       const res = (await chrome.runtime.sendMessage({
@@ -107,6 +125,66 @@ export default function App() {
     });
   }, [payload, frame, displayScale]);
 
+  /**
+   * Track 3 round trip: model runs here (panel), text assembly + boxing run
+   * in the content script. Keyed on [payload, frame] like the DOM `boxes`
+   * memo above — same frame, so NER boxes land in the same space. Guarded
+   * by nerRanFor so a `frame` recompute for the SAME payload (e.g. a
+   * re-render after displayScale settles) does not re-issue the round trip.
+   */
+  useEffect(() => {
+    if (!payload || !frame) return;
+    if (nerRanFor.current === payload) return;
+    nerRanFor.current = payload;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const textRes = await sendToContent(payload.tabId, { type: 'NER_TEXT_REQUEST' });
+        if (textRes?.type !== 'NER_TEXT_RESULT') {
+          throw new Error('Content script returned an unexpected NER text response.');
+        }
+
+        const spans = await classifyText(textRes.nerText);
+
+        const boxRes = await sendToContent(payload.tabId, {
+          type: 'NER_BOX_REQUEST',
+          spans,
+          frame,
+        });
+        if (boxRes?.type !== 'NER_BOX_RESULT') {
+          throw new Error('Content script returned an unexpected NER box response.');
+        }
+
+        if (!cancelled) setNerBoxes(boxRes.boxes);
+      } catch (err) {
+        // Track 3 is additive. A capture the user can still see and use
+        // matters more than a failed NER pass — never surface this as the
+        // main error state.
+        if (!cancelled) {
+          setNerError(err instanceof Error ? err.message : String(err));
+        }
+        console.error('[SIH] NER round trip failed', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [payload, frame]);
+
+  const nerDrawnBoxes = useMemo(() => {
+    if (displayScale === 0) return [];
+    return nerBoxes.map((box) => ({
+      ...imageBoxToCssBox(box.imageBox, displayScale),
+      piiType: box.piiType,
+      subtype: box.subtype,
+      confidence: box.confidence,
+      text: box.text,
+    }));
+  }, [nerBoxes, displayScale]);
+
   return (
     <div className="app">
       <header className="header">
@@ -164,8 +242,32 @@ export default function App() {
                     <span className="tick br" />
                   </div>
                 ))}
+
+                {nerDrawnBoxes.map((box, i) => (
+                  <div
+                    key={`ner-${i}`}
+                    className="box ner"
+                    title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} — ${Math.round(box.confidence * 100)}%`}
+                    style={{
+                      left: `${box.left}px`,
+                      top: `${box.top}px`,
+                      width: `${box.width}px`,
+                      height: `${box.height}px`,
+                    }}
+                  >
+                    <span className="tick tl" />
+                    <span className="tick tr" />
+                    <span className="tick bl" />
+                    <span className="tick br" />
+                  </div>
+                ))}
               </div>
             </div>
+
+            <p className="ner-status">
+              Track 3: {nerBoxes.length} box{nerBoxes.length === 1 ? '' : 'es'}
+              {nerError ? ` — NER failed: ${nerError}` : ''}
+            </p>
 
             <ElementList
               elements={payload.snapshot.elements}

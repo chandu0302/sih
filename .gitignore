@@ -27,6 +27,15 @@ server/env/
 # ORT wasm binaries — copied from node_modules at build time, not committed
 extension/public/ort/
 
+# transformers.js's own onnxruntime-web wasm binaries — separate version from
+# the above, staged at build time. See build.mjs.
+extension/public/ort-tfjs/
+
+# MeridianPII NER model — 55MB, over GitHub's 50MB warning (unlike the 10MB
+# YOLO face model we commit directly). Staged manually for now; see
+# README.md "Models" for source + sha256.
+extension/public/models/plingampally/
+
 # ── Model weights — large binaries, document the download in README ─
 extension/assets/models/*.onnx
 extension/assets/models/*.bin

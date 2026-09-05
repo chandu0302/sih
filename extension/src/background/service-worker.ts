@@ -94,6 +94,7 @@ async function runCapture(): Promise<CapturePayload> {
     screenshotDataUrl,
     snapshot,
     drift,
+    tabId: tab.id,
     timings: {
       injectMs,
       snapshotMs,

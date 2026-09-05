@@ -165,4 +165,11 @@ Chrome API error.
   - Dataset: WIDERFACE
   - Confirmed by inspection (session.inputNames/outputNames/dims), not assumed: input `images` float32 `[1,3,640,640]` NCHW RGB; output `output0` float32 `[1,5,8400]` (`cx,cy,w,h,score` per anchor, score already sigmoid'd, no baked-in NMS).
 
+- **`extension/public/models/plingampally/meridianpii-hi-v2/`** — Hindi/English NER for PII (Track 3, 4a). Gitignored (~55MB, over GitHub's 50MB warning) — staged manually for now; download from the source below.
+  - Source: https://huggingface.co/plingampally/meridianpii-hi-v2 (`config.json`, `tokenizer.json`, `tokenizer_config.json`, `special_tokens_map.json`, `onnx/model_quantized.onnx` — INT8, dtype `q8`; skip `.safetensors`/full-precision `model.onnx`/any PyTorch `.bin`)
+  - sha256 (`onnx/model_quantized.onnx`): `0a60415537461aed8e7380da01d051f23e962a1c540129a94ba4f3925e26be56`
+  - License: **CC BY 4.0** — attribution required on redistribution.
+  - Base model: MiniLM (Apache-2.0). Derived from Rampart (CC BY 4.0).
+  - 17-label BIO token-classification (`BertForTokenClassification`): `GIVEN_NAME, SURNAME, EMAIL, PHONE, URL, TAX_ID, BANK_ACCOUNT, ROUTING_NUMBER, GOVERNMENT_ID, PASSPORT, DRIVERS_LICENSE, BUILDING_NUMBER, STREET_NAME, SECONDARY_ADDRESS, CITY, STATE, ZIP_CODE`. Loaded via `@huggingface/transformers`' `pipeline('token-classification', ..., { dtype: 'q8' })`, confidence floor `0.15` (INT8 flattens scores — Track 2's 0.4 would drop real hits), text NFC-normalized only (NFKD strips Devanagari matras).
+
 ## Layout

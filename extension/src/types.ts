@@ -5,7 +5,14 @@
  * (content script, service worker, side panel). Every later phase adds
  * fields here rather than inventing parallel shapes, so keep this file
  * as the single source of truth.
+ *
+ * NOTE (Track 3, 4c): CoordinateFrame below is imported type-only from
+ * lib/coords, which itself imports types from here type-only. That is a
+ * cycle, but an `import type` one — TypeScript erases both sides at compile
+ * time, so nothing circular exists in the emitted JS. Flagged since it looks
+ * alarming on a dependency graph; it is not a runtime problem.
  */
+import type { CoordinateFrame } from './lib/coords';
 
 /** Semantic classes of PII. Unused in Phase 1; fixed now so Phase 2/3 agree. */
 export type PiiType =
@@ -24,6 +31,37 @@ export type PiiType =
 
 /** Which detector produced a box. Phase 2. */
 export type DetectionSource = 'DOM' | 'FACE_MODEL' | 'NER_MODEL';
+
+/**
+ * One NER hit (NOT boxed here — ner-track.ts's spansToBoxes does that).
+ *
+ * NO CHAR OFFSETS ARE AVAILABLE. transformers.js's TokenClassificationPipeline
+ * carries a literal `// TODO: Add support for start and end` where it builds
+ * each token, and its groupEntities() returns only `{ entity_group, score,
+ * word }`. The `start?`/`end?` in its own .d.ts are aspirational — verified
+ * empirically in Node against the real weights (Track 3, 4a). The
+ * Rust-backed tokenizer exposes no offset mapping either.
+ *
+ * `word` is therefore the only anchor ner-track.ts has to work from. Offsets
+ * stay on the shape, always null for now, in case a future transformers.js
+ * version adds real ones — so a fix would fill them in rather than churn
+ * every consumer's type.
+ *
+ * MOVED HERE IN 4c (was ner-detector.ts): now a cross-boundary DTO — it
+ * crosses the panel -> content script message channel in NER_BOX_REQUEST, so
+ * it belongs in the shared contract, not a model-only module. Re-exported
+ * from ner-detector.ts for existing importers.
+ */
+export interface NerSpan {
+  piiType: PiiType;
+  /** The decoded entity text, e.g. 'प्रिया'. Today's only anchor. */
+  word: string;
+  /** Char offsets into the NFC-normalized input. null until a real one exists. */
+  start: number | null;
+  end: number | null;
+  score: number;
+  label: string;
+}
 
 /**
  * A rectangle in viewport-relative CSS pixels, exactly as returned by
@@ -141,6 +179,14 @@ export interface CapturePayload {
   timings: CaptureTimings;
   /** Set when the page moved between snapshot and capture. See coords.ts. */
   drift: DriftReport | null;
+  /**
+   * The captured tab's id. Track 3, 4c: the panel talks to the content
+   * script directly for NER (sendToContent(tabId, ...)) rather than routing
+   * every message through the service worker — this is what makes that
+   * possible without adding a NER step to the drift-critical capture
+   * sequence in service-worker.ts.
+   */
+  tabId: number;
 }
 
 export interface CaptureTimings {
@@ -168,15 +214,29 @@ export interface DriftReport {
 /** Side panel -> service worker. */
 export type PanelRequest = { type: 'CAPTURE_REQUEST' };
 
-/** Service worker -> content script. */
+/**
+ * Service worker -> content script.
+ *
+ * Track 3, 4c: NER_TEXT_REQUEST/NER_BOX_REQUEST are sent by the PANEL, not
+ * the service worker — "ContentRequest" names the recipient, not the
+ * sender. The panel has <all_urls> host access, so it can message a tab's
+ * content script directly via sendToContent(tabId, ...) without routing
+ * through the service worker, keeping the capture sequence untouched.
+ */
 export type ContentRequest =
   | { type: 'SNAPSHOT_REQUEST' }
-  | { type: 'VIEWPORT_PROBE' };
+  | { type: 'VIEWPORT_PROBE' }
+  | { type: 'NER_TEXT_REQUEST' }
+  | { type: 'NER_BOX_REQUEST'; spans: NerSpan[]; frame: CoordinateFrame };
 
-/** Content script -> service worker. */
+/** Content script -> its caller (service worker for the first two, panel for the NER pair). */
 export type ContentResponse =
   | { type: 'SNAPSHOT_RESULT'; snapshot: DomSnapshot }
-  | { type: 'VIEWPORT_RESULT'; viewport: ViewportContext };
+  | { type: 'VIEWPORT_RESULT'; viewport: ViewportContext }
+  /** Already premasked — see ner-track.ts's asymmetry note: this is what
+   *  the model reads, NOT what NER_BOX_REQUEST searches against. */
+  | { type: 'NER_TEXT_RESULT'; nerText: string }
+  | { type: 'NER_BOX_RESULT'; boxes: DetectedBox[] };
 
 /** Service worker -> side panel. Errors are values, not exceptions, because
  *  they cross a message boundary that does not preserve stack traces. */
