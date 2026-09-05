@@ -47,7 +47,13 @@ export const PII_PATTERNS: PiiPattern[] = [
   {
     type: 'PHONE',
     subtype: 'phone_in',
-    regex: /\b(?:\+91[-\s]?)?[6-9]\d{9}\b/g,
+    // A leading \b cannot anchor before '+' (non-word char on both sides),
+    // so the old pattern only ever matched the bare 10 digits and silently
+    // dropped the +91 prefix from both premask and the redaction box.
+    // Digit-based lookaround fixes this: (?<!\d) / (?!\d) require a
+    // NON-DIGIT (or string edge) on each side, which +91[-\s]? still
+    // provides while a bare \b would not.
+    regex: /(?<!\d)(?:\+91[-\s]?)?[6-9]\d{9}(?!\d)/g,
   },
   {
     type: 'EMAIL',
