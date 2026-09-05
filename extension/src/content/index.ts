@@ -24,6 +24,7 @@ import { onContentMessage } from '../lib/messaging';
 import { captureViewportContext, takeSnapshot } from './snapshot';
 import type { ContentRequest, ContentResponse } from '../types';
 import { assembleVisibleText, premask, spansToBoxes, type TextSegment } from '../detection/ner-track';
+import { detectDomPii } from '../detection/dom-track';
 
 declare global {
   interface Window {
@@ -82,6 +83,9 @@ if (!window.__sihContentInstalled) {
         );
         return { type: 'NER_BOX_RESULT', boxes };
       }
+
+      case 'DOM_PII_REQUEST':
+        return { type: 'DOM_PII_RESULT', boxes: detectDomPii(message.frame) };
     }
   });
 

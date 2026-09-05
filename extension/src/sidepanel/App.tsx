@@ -1,15 +1,19 @@
 /**
  * SIH 26171 — side panel.
  *
- * This is the verification instrument for Phase 1. Its purpose is not to look
- * like an AI assistant; it is to answer one question definitively:
+ * Phase 1's job was to prove the coordinate contract: do boxes computed by
+ * coords.ts land exactly on their elements. Phase 2 (this file, as of
+ * Brief 5) builds on that proof to run all three PII detection tracks and
+ * show one unified, deduped overlay — the thing a judge actually sees.
  *
- *   Do the boxes computed by coords.ts land exactly on their elements?
+ *   Track 1 (detectDomPii)  — content script, live DOM.
+ *   Track 2 (detectFaces)   — panel, screenshot pixels + WebGPU.
+ *   Track 3 (NER round trip)— content assembles/boxes, panel runs the model.
  *
- * If they do, the coordinate contract holds and Phase 2 can stack face
- * detection and NER on top of it. If they do not, nothing downstream can
- * possibly be correct, and we would rather find that out here than after
- * building a redaction engine on a broken transform.
+ * Each track runs independently and is individually fault-tolerant: one
+ * failing (a WebGPU load error, a content-script timeout) degrades to
+ * whatever the other two found, never a blank overlay. See the detection
+ * effect below.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,8 +25,16 @@ import {
   type CoordinateFrame,
 } from '../lib/coords';
 import { classifyText, warmNerModel } from '../detection/ner-detector';
+import { detectFaces, warmFaceModel } from '../detection/face-detector';
+import { mergeDetections } from '../detection/box-merger';
 import { sendToContent } from '../lib/messaging';
-import type { CapturePayload, CaptureResponse, DetectedBox, SnapshotElement } from '../types';
+import type {
+  CapturePayload,
+  CaptureResponse,
+  DetectedBox,
+  PiiType,
+  SnapshotElement,
+} from '../types';
 
 interface DrawnBox {
   nodeId: string;
@@ -31,6 +43,42 @@ interface DrawnBox {
   width: number;
   height: number;
   isInteractive: boolean;
+}
+
+/**
+ * One color per PiiType, grouped by sensitivity family rather than given 12
+ * arbitrary hues: PASSWORD/SECRET share the "critical" red used elsewhere
+ * for errors; FACE gets its own hue since it's a visual rather than
+ * text-based detection; the rest of the text-derived types each get a
+ * distinct, legible-on-dark hue. Consumed by both the overlay boxes and the
+ * legend below.
+ */
+const PII_COLORS: Record<PiiType, string> = {
+  FACE: '#6366f1',
+  PASSWORD: '#f2603c',
+  SECRET: '#f2603c',
+  CARD: '#e9a73c',
+  ID_NUMBER: '#f472b6',
+  NAME: '#a78bfa',
+  EMAIL: '#22d3ee',
+  PHONE: '#34d399',
+  ADDRESS: '#facc15',
+  URL: '#38bdf8',
+  DATE: '#94a3b8',
+  OTHER: '#7b8fa1',
+};
+
+/** Per-capture Step 5 metrics: what judges score under efficiency/latency. */
+interface DetectionMetrics {
+  faceMs: number;
+  domMs: number;
+  nerMs: number;
+  totalMs: number;
+  faceCount: number;
+  domCount: number;
+  nerCount: number;
+  mergedCount: number;
+  dupesCollapsed: number;
 }
 
 export default function App() {
@@ -43,16 +91,16 @@ export default function App() {
   const [displayScale, setDisplayScale] = useState(0);
   const imgRef = useRef<HTMLImageElement>(null);
 
-  // Track 3 (NER) state. A NER failure must never break the capture view —
-  // see the round-trip effect below, which only ever sets nerError, never
-  // rethrows.
-  const [nerBoxes, setNerBoxes] = useState<DetectedBox[]>([]);
-  const [nerError, setNerError] = useState<string | null>(null);
-  /** Which payload the NER round trip has already run for — a ref, not
+  // Phase 2 unified detections (all three tracks, merged) + Step 5 metrics.
+  const [detections, setDetections] = useState<DetectedBox[]>([]);
+  const [detectWarning, setDetectWarning] = useState<string | null>(null);
+  const [metrics, setMetrics] = useState<DetectionMetrics | null>(null);
+  /** Which payload the detection pass has already run for — a ref, not
    *  state, because it must not itself trigger a re-run when it changes. */
-  const nerRanFor = useRef<CapturePayload | null>(null);
+  const detectRanFor = useRef<CapturePayload | null>(null);
 
   useEffect(() => {
+    warmFaceModel().catch((err) => console.error('[SIH] Face warm-up failed', err));
     warmNerModel().catch((err) => console.error('[SIH] NER warm-up failed', err));
   }, []);
 
@@ -60,10 +108,11 @@ export default function App() {
     setBusy(true);
     setError(null);
     setSelected(null);
-    setDisplayScale(0);   
-    setNerBoxes([]);
-    setNerError(null);
-    nerRanFor.current = null;
+    setDisplayScale(0);
+    setDetections([]);
+    setDetectWarning(null);
+    setMetrics(null);
+    detectRanFor.current = null;
 
     try {
       const res = (await chrome.runtime.sendMessage({
@@ -126,47 +175,115 @@ export default function App() {
   }, [payload, frame, displayScale]);
 
   /**
-   * Track 3 round trip: model runs here (panel), text assembly + boxing run
-   * in the content script. Keyed on [payload, frame] like the DOM `boxes`
-   * memo above — same frame, so NER boxes land in the same space. Guarded
-   * by nerRanFor so a `frame` recompute for the SAME payload (e.g. a
-   * re-render after displayScale settles) does not re-issue the round trip.
+   * The Phase-2 detection pass: all three tracks, run concurrently, each
+   * independently fault-tolerant, merged, timed.
+   *
+   * Keyed on [payload, frame] like the DOM `boxes` memo above — same frame,
+   * so every track's boxes land in the same space. Guarded by detectRanFor
+   * so a `frame` recompute for the SAME payload does not re-issue the pass.
+   *
+   * DEVIATION FROM THE BRIEF'S LITERAL PSEUDOCODE, worth flagging: the brief
+   * sketches `Promise.all([detectFaces, DOM_PII_REQUEST, NER_TEXT_REQUEST])`
+   * and only THEN sequentially runs classifyText + NER_BOX_REQUEST — which
+   * would block Track 3's model call until Track 2's (typically slower)
+   * face inference finishes, even though the two have no dependency on each
+   * other. Here each track is its own fully independent async pipeline,
+   * racing from the start; Track 3 internally sequences its own two-step
+   * text -> classify -> box chain. Lower total latency, same merged result,
+   * same fault isolation — this is a latency optimization, not a
+   * behavioral change from what the brief specifies.
    */
   useEffect(() => {
     if (!payload || !frame) return;
-    if (nerRanFor.current === payload) return;
-    nerRanFor.current = payload;
+    if (detectRanFor.current === payload) return;
+    detectRanFor.current = payload;
 
     let cancelled = false;
 
     (async () => {
-      try {
-        const textRes = await sendToContent(payload.tabId, { type: 'NER_TEXT_REQUEST' });
-        if (textRes?.type !== 'NER_TEXT_RESULT') {
-          throw new Error('Content script returned an unexpected NER text response.');
-        }
+      const totalStart = performance.now();
+      let faceBoxes: DetectedBox[] = [];
+      let domBoxes: DetectedBox[] = [];
+      let nerBoxes: DetectedBox[] = [];
+      let faceMs = 0;
+      let domMs = 0;
+      let nerMs = 0;
+      const warnings: string[] = [];
 
-        const spans = await classifyText(textRes.nerText);
-
-        const boxRes = await sendToContent(payload.tabId, {
-          type: 'NER_BOX_REQUEST',
-          spans,
-          frame,
-        });
-        if (boxRes?.type !== 'NER_BOX_RESULT') {
-          throw new Error('Content script returned an unexpected NER box response.');
+      const faceTrack = (async () => {
+        const start = performance.now();
+        try {
+          const blob = await (await fetch(payload.screenshotDataUrl)).blob();
+          const image = await createImageBitmap(blob);
+          faceBoxes = await detectFaces(image, frame);
+        } catch (err) {
+          console.error('[SIH] Face detection failed', err);
+          warnings.push(`face: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          faceMs = performance.now() - start;
         }
+      })();
 
-        if (!cancelled) setNerBoxes(boxRes.boxes);
-      } catch (err) {
-        // Track 3 is additive. A capture the user can still see and use
-        // matters more than a failed NER pass — never surface this as the
-        // main error state.
-        if (!cancelled) {
-          setNerError(err instanceof Error ? err.message : String(err));
+      const domTrack = (async () => {
+        const start = performance.now();
+        try {
+          const res = await sendToContent(payload.tabId, { type: 'DOM_PII_REQUEST', frame });
+          if (res?.type !== 'DOM_PII_RESULT') {
+            throw new Error('Content script returned an unexpected DOM PII response.');
+          }
+          domBoxes = res.boxes;
+        } catch (err) {
+          console.error('[SIH] DOM PII detection failed', err);
+          warnings.push(`dom: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          domMs = performance.now() - start;
         }
-        console.error('[SIH] NER round trip failed', err);
-      }
+      })();
+
+      const nerTrack = (async () => {
+        const start = performance.now();
+        try {
+          const textRes = await sendToContent(payload.tabId, { type: 'NER_TEXT_REQUEST' });
+          if (textRes?.type !== 'NER_TEXT_RESULT') {
+            throw new Error('Content script returned an unexpected NER text response.');
+          }
+          const spans = await classifyText(textRes.nerText);
+          const boxRes = await sendToContent(payload.tabId, {
+            type: 'NER_BOX_REQUEST',
+            spans,
+            frame,
+          });
+          if (boxRes?.type !== 'NER_BOX_RESULT') {
+            throw new Error('Content script returned an unexpected NER box response.');
+          }
+          nerBoxes = boxRes.boxes;
+        } catch (err) {
+          console.error('[SIH] NER detection failed', err);
+          warnings.push(`ner: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          nerMs = performance.now() - start;
+        }
+      })();
+
+      await Promise.all([faceTrack, domTrack, nerTrack]);
+      if (cancelled) return;
+
+      const raw = [...faceBoxes, ...domBoxes, ...nerBoxes];
+      const merged = mergeDetections(raw);
+
+      setDetections(merged);
+      setDetectWarning(warnings.length > 0 ? warnings.join('; ') : null);
+      setMetrics({
+        faceMs: Math.round(faceMs),
+        domMs: Math.round(domMs),
+        nerMs: Math.round(nerMs),
+        totalMs: Math.round(performance.now() - totalStart),
+        faceCount: faceBoxes.length,
+        domCount: domBoxes.length,
+        nerCount: nerBoxes.length,
+        mergedCount: merged.length,
+        dupesCollapsed: raw.length - merged.length,
+      });
     })();
 
     return () => {
@@ -174,22 +291,30 @@ export default function App() {
     };
   }, [payload, frame]);
 
-  const nerDrawnBoxes = useMemo(() => {
+  const detectedDrawnBoxes = useMemo(() => {
     if (displayScale === 0) return [];
-    return nerBoxes.map((box) => ({
+    return detections.map((box) => ({
       ...imageBoxToCssBox(box.imageBox, displayScale),
       piiType: box.piiType,
       subtype: box.subtype,
+      source: box.source,
       confidence: box.confidence,
-      text: box.text,
     }));
-  }, [nerBoxes, displayScale]);
+  }, [detections, displayScale]);
+
+  /** Only the types actually present this capture — an always-full 12-chip
+   *  legend would be noise on a page with two PII types on it. */
+  const presentTypes = useMemo(() => {
+    const seen = new Set<PiiType>();
+    for (const box of detections) seen.add(box.piiType);
+    return Array.from(seen);
+  }, [detections]);
 
   return (
     <div className="app">
       <header className="header">
-        <p className="eyebrow">SIH 26171 · Phase 1</p>
-        <h1 className="title">Screen capture &amp; alignment</h1>
+        <p className="eyebrow">SIH 26171 · Phase 2</p>
+        <h1 className="title">Screen capture &amp; PII detection</h1>
         <button className="capture-btn" onClick={capture} disabled={busy}>
           {busy ? 'Capturing…' : 'Capture this page'}
         </button>
@@ -243,31 +368,56 @@ export default function App() {
                   </div>
                 ))}
 
-                {nerDrawnBoxes.map((box, i) => (
-                  <div
-                    key={`ner-${i}`}
-                    className="box ner"
-                    title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} — ${Math.round(box.confidence * 100)}%`}
-                    style={{
-                      left: `${box.left}px`,
-                      top: `${box.top}px`,
-                      width: `${box.width}px`,
-                      height: `${box.height}px`,
-                    }}
-                  >
-                    <span className="tick tl" />
-                    <span className="tick tr" />
-                    <span className="tick bl" />
-                    <span className="tick br" />
-                  </div>
-                ))}
+                {detectedDrawnBoxes.map((box, i) => {
+                  const color = PII_COLORS[box.piiType];
+                  return (
+                    <div
+                      key={`det-${i}`}
+                      className="box detected"
+                      title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} · ${box.source} · ${Math.round(box.confidence * 100)}%`}
+                      style={{
+                        left: `${box.left}px`,
+                        top: `${box.top}px`,
+                        width: `${box.width}px`,
+                        height: `${box.height}px`,
+                        borderColor: color,
+                        background: `${color}29`,
+                        color,
+                      }}
+                    >
+                      <span className="tick tl" />
+                      <span className="tick tr" />
+                      <span className="tick bl" />
+                      <span className="tick br" />
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            <p className="ner-status">
-              Track 3: {nerBoxes.length} box{nerBoxes.length === 1 ? '' : 'es'}
-              {nerError ? ` — NER failed: ${nerError}` : ''}
-            </p>
+            {presentTypes.length > 0 && (
+              <ul className="legend">
+                {presentTypes.map((type) => (
+                  <li key={type} className="legend-chip">
+                    <span
+                      className="legend-dot"
+                      style={{ background: PII_COLORS[type] }}
+                    />
+                    {type}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {metrics && (
+              <p className="metrics">
+                {metrics.mergedCount} box{metrics.mergedCount === 1 ? '' : 'es'}
+                {' '}({metrics.faceCount} face · {metrics.domCount} dom · {metrics.nerCount} ner)
+                {' · '}face {metrics.faceMs}ms · dom {metrics.domMs}ms · ner {metrics.nerMs}ms
+                {' · '}{metrics.dupesCollapsed} deduped · {metrics.totalMs}ms total
+                {detectWarning ? ` — ${detectWarning}` : ''}
+              </p>
+            )}
 
             <ElementList
               elements={payload.snapshot.elements}

@@ -222,21 +222,30 @@ export type PanelRequest = { type: 'CAPTURE_REQUEST' };
  * sender. The panel has <all_urls> host access, so it can message a tab's
  * content script directly via sendToContent(tabId, ...) without routing
  * through the service worker, keeping the capture sequence untouched.
+ *
+ * Phase 2 / Brief 5: DOM_PII_REQUEST is the same shape — Track 1
+ * (detectDomPii) needs the live DOM, so it runs in the content script too,
+ * driven by the panel-built frame just like the NER pair. Kept as its own
+ * message pair rather than piggybacked onto NER_TEXT_REQUEST, so the three
+ * tracks stay independent: any one of them failing must not block the
+ * other two (see App.tsx's detection effect).
  */
 export type ContentRequest =
   | { type: 'SNAPSHOT_REQUEST' }
   | { type: 'VIEWPORT_PROBE' }
   | { type: 'NER_TEXT_REQUEST' }
-  | { type: 'NER_BOX_REQUEST'; spans: NerSpan[]; frame: CoordinateFrame };
+  | { type: 'NER_BOX_REQUEST'; spans: NerSpan[]; frame: CoordinateFrame }
+  | { type: 'DOM_PII_REQUEST'; frame: CoordinateFrame };
 
-/** Content script -> its caller (service worker for the first two, panel for the NER pair). */
+/** Content script -> its caller (service worker for the first two, panel for the rest). */
 export type ContentResponse =
   | { type: 'SNAPSHOT_RESULT'; snapshot: DomSnapshot }
   | { type: 'VIEWPORT_RESULT'; viewport: ViewportContext }
   /** Already premasked — see ner-track.ts's asymmetry note: this is what
    *  the model reads, NOT what NER_BOX_REQUEST searches against. */
   | { type: 'NER_TEXT_RESULT'; nerText: string }
-  | { type: 'NER_BOX_RESULT'; boxes: DetectedBox[] };
+  | { type: 'NER_BOX_RESULT'; boxes: DetectedBox[] }
+  | { type: 'DOM_PII_RESULT'; boxes: DetectedBox[] };
 
 /** Service worker -> side panel. Errors are values, not exceptions, because
  *  they cross a message boundary that does not preserve stack traces. */
