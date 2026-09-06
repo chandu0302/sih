@@ -259,6 +259,35 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Phase 3c: default view is the clean sanitized image; this reveals the
+ * redaction overlay on demand, never raw pixels or matched text. */
+.overlay-toggle {
+  display: block;
+  margin: 8px var(--pad);
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--panel-hi);
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.overlay-toggle:hover { background: var(--panel-hi); color: var(--ink); }
+.overlay-toggle:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+.manifest-summary {
+  margin: 0 var(--pad) var(--pad);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ---------------------------------------------------------------- */
 /* Element list                                                      */
 /* ---------------------------------------------------------------- */

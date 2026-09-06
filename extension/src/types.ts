@@ -87,6 +87,30 @@ export interface ImageBox {
 }
 
 /**
+ * Phase 3c: one redacted region, in the shape ARCHITECTURE.md's Phase 3
+ * design settled on — `{type, bbox, selector, confidence}` — minus `text`.
+ * This is what Phase 4 will eventually send to the server alongside the
+ * sanitized image, so the matched PII text must never appear here (same
+ * principle as DetectedBox's attribute hits recording no `text`).
+ *
+ * `nodeId` stands in for the doc's `selector`: DetectedBox never carried a
+ * persistent CSS selector (dom-track.ts's NodeIdSource is scoped to one
+ * scan; NER hits are Range-based, not element-based) — building one is
+ * out-of-scope P5 convergence work, not an oversight here.
+ */
+export interface RedactionRegion {
+  type: PiiType;
+  bbox: ImageBox;
+  nodeId?: string;
+  confidence: number;
+}
+
+/** Phase 3c: the full manifest for one capture. */
+export interface RedactionManifest {
+  regions: RedactionRegion[];
+}
+
+/**
  * One PII detection, already in canonical image-pixel space. Emitted by each
  * detection track (DOM/regex, face model, NER) and merged before redaction.
  */

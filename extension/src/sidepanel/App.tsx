@@ -29,6 +29,7 @@ import { classifyText, warmNerModel } from '../detection/ner-detector';
 import { detectFaces, warmFaceModel } from '../detection/face-detector';
 import { mergeDetections } from '../detection/box-merger';
 import { blurFaces } from '../redaction/face-blur';
+import { buildRedactionManifest } from '../redaction/manifest';
 import { sendToContent } from '../lib/messaging';
 import type {
   CapturePayload,
@@ -105,6 +106,12 @@ export default function App() {
   const [sanitizedScreenshotDataUrl, setSanitizedScreenshotDataUrl] = useState<string | null>(
     null,
   );
+  /** Phase 3c: OFF by default — the default view is the clean sanitized
+   *  output (what a real downstream consumer would see). Toggling ON
+   *  overlays the redaction regions for inspection; it never reveals raw
+   *  pixels or matched text, only type/location/confidence — see
+   *  redaction/manifest.ts's doc comment on why. */
+  const [showRedactionOverlay, setShowRedactionOverlay] = useState(false);
   /** Which payload the detection pass has already run for — a ref, not
    *  state, because it must not itself trigger a re-run when it changes. */
   const detectRanFor = useRef<CapturePayload | null>(null);
@@ -450,6 +457,11 @@ export default function App() {
     return Array.from(seen);
   }, [detections]);
 
+  /** Phase 3c: what Phase 4 will eventually send alongside the sanitized
+   *  image. Built from the same merged `detections` the overlay already
+   *  draws — no new detection pass, no raw text (see manifest.ts). */
+  const manifest = useMemo(() => buildRedactionManifest(detections), [detections]);
+
   return (
     <div className="app">
       <header className="header">
@@ -508,34 +520,45 @@ export default function App() {
                   </div>
                 ))}
 
-                {detectedDrawnBoxes.map((box, i) => {
-                  const color = PII_COLORS[box.piiType];
-                  return (
-                    <div
-                      key={`det-${i}`}
-                      className="box detected"
-                      title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} · ${box.source} · ${Math.round(box.confidence * 100)}%`}
-                      style={{
-                        left: `${box.left}px`,
-                        top: `${box.top}px`,
-                        width: `${box.width}px`,
-                        height: `${box.height}px`,
-                        borderColor: color,
-                        background: `${color}29`,
-                        color,
-                      }}
-                    >
-                      <span className="tick tl" />
-                      <span className="tick tr" />
-                      <span className="tick bl" />
-                      <span className="tick br" />
-                    </div>
-                  );
-                })}
+                {showRedactionOverlay &&
+                  detectedDrawnBoxes.map((box, i) => {
+                    const color = PII_COLORS[box.piiType];
+                    return (
+                      <div
+                        key={`det-${i}`}
+                        className="box detected"
+                        title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} · ${box.source} · ${Math.round(box.confidence * 100)}%`}
+                        style={{
+                          left: `${box.left}px`,
+                          top: `${box.top}px`,
+                          width: `${box.width}px`,
+                          height: `${box.height}px`,
+                          borderColor: color,
+                          background: `${color}29`,
+                          color,
+                        }}
+                      >
+                        <span className="tick tl" />
+                        <span className="tick tr" />
+                        <span className="tick bl" />
+                        <span className="tick br" />
+                      </div>
+                    );
+                  })}
               </div>
             </div>
 
-            {presentTypes.length > 0 && (
+            {detections.length > 0 && (
+              <button
+                type="button"
+                className="overlay-toggle"
+                onClick={() => setShowRedactionOverlay((v) => !v)}
+              >
+                {showRedactionOverlay ? 'Hide redacted regions' : 'Show redacted regions'}
+              </button>
+            )}
+
+            {presentTypes.length > 0 && showRedactionOverlay && (
               <ul className="legend">
                 {presentTypes.map((type) => (
                   <li key={type} className="legend-chip">
@@ -556,6 +579,22 @@ export default function App() {
                 {' · '}face {metrics.faceMs}ms · dom {metrics.domMs}ms · ner {metrics.nerMs}ms
                 {' · '}{metrics.dupesCollapsed} deduped · {metrics.totalMs}ms total
                 {detectWarning ? ` — ${detectWarning}` : ''}
+              </p>
+            )}
+
+            {manifest.regions.length > 0 && (
+              <p className="manifest-summary">
+                Manifest: {manifest.regions.length} region
+                {manifest.regions.length === 1 ? '' : 's'} (
+                {Object.entries(
+                  manifest.regions.reduce<Record<string, number>>((counts, r) => {
+                    counts[r.type] = (counts[r.type] ?? 0) + 1;
+                    return counts;
+                  }, {}),
+                )
+                  .map(([type, count]) => `${count} ${type}`)
+                  .join(' · ')}
+                ) — no matched text, ready for Phase 4
               </p>
             )}
 
