@@ -18,6 +18,7 @@ import {
   detectDrift,
   domRectToImageBox,
   imageBoxToCssBox,
+  imagePointToCssPoint,
   iou,
   modelBoxToImageBox,
 } from './coords';
@@ -141,6 +142,36 @@ describe('domRectToImageBox', () => {
 
     // If scrollY leaked into the transform, y would be ~4010 and off-image.
     expect(box.y).toBe(10);
+  });
+});
+
+describe('imagePointToCssPoint — the inverse of domRectToImageBox', () => {
+  const frame = createCoordinateFrame(viewport(1000, 800, { scrollbar: 0 }), 2000, 1600);
+
+  it('scales an image point back down to CSS pixels', () => {
+    const point = imagePointToCssPoint({ x: 400, y: 200 }, frame);
+    expect(point).toEqual({ left: 200, top: 100 });
+  });
+
+  it('round-trips a domRectToImageBox origin back to (approximately) the original CSS point', () => {
+    const cssRect = { left: 123, top: 45, width: 10, height: 10 };
+    const imageBox = domRectToImageBox(cssRect, frame);
+    const back = imagePointToCssPoint({ x: imageBox.x, y: imageBox.y }, frame);
+
+    // domRectToImageBox floors the origin outward; the round trip should
+    // land within one CSS pixel of the original, not drift arbitrarily.
+    expect(Math.abs(back.left - cssRect.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(back.top - cssRect.top)).toBeLessThanOrEqual(1);
+  });
+
+  it('has no scroll term, same as domRectToImageBox', () => {
+    const scrolled = createCoordinateFrame(
+      viewport(1000, 800, { scrollbar: 0, scrollY: 4000 }),
+      1000,
+      800,
+    );
+    const point = imagePointToCssPoint({ x: 10, y: 20 }, scrolled);
+    expect(point).toEqual({ left: 10, top: 20 });
   });
 });
 

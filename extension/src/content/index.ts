@@ -26,6 +26,7 @@ import type { ContentRequest, ContentResponse } from '../types';
 import { assembleVisibleText, premask, spansToBoxes, type TextSegment } from '../detection/ner-track';
 import { detectDomPii } from '../detection/dom-track';
 import { applyMasks, removeMasks } from '../redaction/mask-overlay';
+import { executeAction } from '../agent/action-executor';
 
 declare global {
   interface Window {
@@ -93,6 +94,11 @@ if (!window.__sihContentInstalled) {
 
       case 'REMOVE_MASK_REQUEST':
         return { type: 'REMOVE_MASK_RESULT', removedCount: removeMasks() };
+
+      case 'EXECUTE_ACTION_REQUEST': {
+        const result = executeAction(message.action);
+        return { type: 'EXECUTE_ACTION_RESULT', ok: result.ok, detail: result.detail };
+      }
     }
   });
 

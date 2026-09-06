@@ -281,6 +281,66 @@ body {
   outline-offset: 1px;
 }
 
+/* Phase 5: one scripted action — task input, run button, result line. */
+.agent-panel {
+  margin: 0 var(--pad) var(--pad);
+  padding: 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--panel);
+}
+
+.agent-label {
+  display: block;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+
+.agent-task {
+  width: 100%;
+  resize: vertical;
+  padding: 6px 8px;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.agent-task:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+.agent-run-btn {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--signal);
+  color: var(--ink);
+  border: none;
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-run-btn:disabled { opacity: 0.5; cursor: default; }
+.agent-run-btn:hover:not(:disabled) { background: #6bdcea; }
+
+.agent-status {
+  margin: 8px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.agent-status.ok { color: var(--signal); }
+.agent-status.error { color: var(--alert); }
+
 .manifest-summary {
   margin: 0 var(--pad) var(--pad);
   font-family: var(--mono);

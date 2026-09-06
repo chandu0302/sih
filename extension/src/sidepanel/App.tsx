@@ -23,6 +23,7 @@ import {
   detectDrift,
   domRectToImageBox,
   imageBoxToCssBox,
+  imagePointToCssPoint,
   type CoordinateFrame,
 } from '../lib/coords';
 import { classifyText, warmNerModel } from '../detection/ner-detector';
@@ -30,10 +31,12 @@ import { detectFaces, warmFaceModel } from '../detection/face-detector';
 import { mergeDetections } from '../detection/box-merger';
 import { blurFaces } from '../redaction/face-blur';
 import { buildRedactionManifest } from '../redaction/manifest';
+import { planAction } from '../agent/server-client';
 import { sendToContent } from '../lib/messaging';
 import type {
   CapturePayload,
   DetectedBox,
+  ExecutableAction,
   PiiType,
   ScreenshotCaptureResponse,
   SnapshotCaptureResponse,
@@ -115,6 +118,12 @@ export default function App() {
   /** Which payload the detection pass has already run for — a ref, not
    *  state, because it must not itself trigger a re-run when it changes. */
   const detectRanFor = useRef<CapturePayload | null>(null);
+
+  /** Phase 5: one scripted action, not a loop — see server-client.ts's doc
+   *  comment for why this is a plain fetch rather than a WebSocket. */
+  const [task, setTask] = useState('');
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<{ ok: boolean; detail: string } | null>(null);
 
   useEffect(() => {
     warmFaceModel().catch((err) => console.error('[SIH] Face warm-up failed', err));
@@ -462,6 +471,72 @@ export default function App() {
    *  draws — no new detection pass, no raw text (see manifest.ts). */
   const manifest = useMemo(() => buildRedactionManifest(detections), [detections]);
 
+  /**
+   * Phase 5: send the current sanitized capture + task to the Phase 4
+   * server, convert the returned action's target from image-pixel space
+   * (what the server/VLM sees) to a real page CSS point (via coords.ts —
+   * no coordinate math here), and have the content script execute it.
+   *
+   * ONE action, not a loop: this function runs once per click, does not
+   * re-capture, and does not chain further steps on `done`/`click`/etc.
+   */
+  const runAgentStep = useCallback(async () => {
+    if (!payload || !frame || !task.trim()) return;
+
+    setAgentBusy(true);
+    setAgentStatus(null);
+
+    try {
+      const image = sanitizedScreenshotDataUrl ?? payload.screenshotDataUrl;
+      const planned = await planAction({ image, manifest, task });
+
+      if (!planned.ok) {
+        setAgentStatus({ ok: false, detail: planned.error });
+        return;
+      }
+
+      const cmd = planned.action;
+      let toExecute: ExecutableAction;
+
+      if (cmd.action === 'click') {
+        if (!cmd.target) {
+          setAgentStatus({ ok: false, detail: "Server returned 'click' with no target." });
+          return;
+        }
+        const point = imagePointToCssPoint(cmd.target, frame);
+        toExecute = { kind: 'click', point };
+      } else if (cmd.action === 'type') {
+        toExecute = { kind: 'type', text: cmd.text ?? '' };
+      } else if (cmd.action === 'scroll') {
+        toExecute = { kind: 'scroll', scrollDirection: cmd.scroll_direction ?? 'down' };
+      } else {
+        setAgentStatus({ ok: true, detail: `Done — ${cmd.reasoning}` });
+        return;
+      }
+
+      const execRes = await sendToContent(payload.tabId, {
+        type: 'EXECUTE_ACTION_REQUEST',
+        action: toExecute,
+      });
+      if (execRes?.type !== 'EXECUTE_ACTION_RESULT') {
+        setAgentStatus({
+          ok: false,
+          detail: 'Content script returned an unexpected execute-action response.',
+        });
+        return;
+      }
+
+      setAgentStatus({
+        ok: execRes.ok,
+        detail: `${cmd.reasoning} — ${execRes.detail ?? ''}`,
+      });
+    } catch (err) {
+      setAgentStatus({ ok: false, detail: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [payload, frame, task, sanitizedScreenshotDataUrl, manifest]);
+
   return (
     <div className="app">
       <header className="header">
@@ -597,6 +672,33 @@ export default function App() {
                 ) — no matched text, ready for Phase 4
               </p>
             )}
+
+            <div className="agent-panel">
+              <label className="agent-label" htmlFor="agent-task">
+                Task for the agent
+              </label>
+              <textarea
+                id="agent-task"
+                className="agent-task"
+                rows={2}
+                placeholder="e.g. Click the Submit button"
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+              />
+              <button
+                type="button"
+                className="agent-run-btn"
+                onClick={runAgentStep}
+                disabled={agentBusy || !task.trim()}
+              >
+                {agentBusy ? 'Running one step…' : 'Run one agent step'}
+              </button>
+              {agentStatus && (
+                <p className={`agent-status ${agentStatus.ok ? 'ok' : 'error'}`}>
+                  {agentStatus.detail}
+                </p>
+              )}
+            </div>
 
             <ElementList
               elements={payload.snapshot.elements}

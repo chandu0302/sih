@@ -144,6 +144,26 @@ export function domRectToImageBox(rect: DomRect2D, frame: CoordinateFrame): Imag
 }
 
 /**
+ * Image pixels -> CSS pixels, for ONE point — the inverse of
+ * domRectToImageBox, needed by Phase 5's action executor to turn a VLM's
+ * click target (image-pixel space, from the sanitized screenshot) back into
+ * a real point on the live page.
+ *
+ * No outward-rounding bias here: that bias exists in domRectToImageBox to
+ * over-cover for redaction (under-covering leaks PII), which does not apply
+ * to picking a single click point — a plain round is the honest center.
+ */
+export function imagePointToCssPoint(
+  point: { x: number; y: number },
+  frame: CoordinateFrame,
+): { left: number; top: number } {
+  return {
+    left: Math.round(point.x / frame.scaleX),
+    top: Math.round(point.y / frame.scaleY),
+  };
+}
+
+/**
  * PHASE 2 STUB — model output -> image pixels.
  *
  * YOLO-family detectors take a square letterboxed input (e.g. 640x640): the

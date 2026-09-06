@@ -279,7 +279,8 @@ export type ContentRequest =
   | { type: 'NER_BOX_REQUEST'; spans: NerSpan[]; frame: CoordinateFrame }
   | { type: 'DOM_PII_REQUEST'; frame: CoordinateFrame }
   | { type: 'APPLY_MASK_REQUEST'; boxes: DetectedBox[] }
-  | { type: 'REMOVE_MASK_REQUEST' };
+  | { type: 'REMOVE_MASK_REQUEST' }
+  | { type: 'EXECUTE_ACTION_REQUEST'; action: ExecutableAction };
 
 /** Content script -> its caller (service worker for the first two, panel for the rest). */
 export type ContentResponse =
@@ -291,7 +292,47 @@ export type ContentResponse =
   | { type: 'NER_BOX_RESULT'; boxes: DetectedBox[] }
   | { type: 'DOM_PII_RESULT'; boxes: DetectedBox[] }
   | { type: 'APPLY_MASK_RESULT'; maskedCount: number }
-  | { type: 'REMOVE_MASK_RESULT'; removedCount: number };
+  | { type: 'REMOVE_MASK_RESULT'; removedCount: number }
+  | { type: 'EXECUTE_ACTION_RESULT'; ok: boolean; detail?: string };
+
+/* ------------------------------------------------------------------ */
+/* Phase 5: agent server contract (panel <-> Phase 4 FastAPI server)   */
+/* ------------------------------------------------------------------ */
+
+/** What the panel sends to the Phase 4 server's POST /plan-action. Mirrors
+ *  server/app/schemas.py's PlanActionRequest field-for-field. */
+export interface AgentPlanRequest {
+  image: string;
+  manifest: RedactionManifest;
+  task: string;
+}
+
+/** Mirrors server/app/schemas.py's ActionCommand field-for-field — `target`
+ *  is in IMAGE-pixel space (the space the sanitized screenshot is in), NOT
+ *  yet converted to a real page point. See App.tsx's use of
+ *  imagePointToCssPoint for that conversion, done before EXECUTE_ACTION_REQUEST
+ *  is ever sent. */
+export interface AgentActionCommand {
+  action: 'click' | 'type' | 'scroll' | 'done';
+  target?: { x: number; y: number } | null;
+  text?: string | null;
+  scroll_direction?: 'up' | 'down' | null;
+  reasoning: string;
+}
+
+/**
+ * One action already resolved to CSS-pixel space — the content script's
+ * action-executor.ts never sees image-pixel coordinates or a CoordinateFrame;
+ * the panel does that conversion (via coords.ts) before this crosses the
+ * message boundary, same division of responsibility as APPLY_MASK_REQUEST's
+ * boxes above.
+ */
+export interface ExecutableAction {
+  kind: 'click' | 'type' | 'scroll' | 'done';
+  point?: { left: number; top: number };
+  text?: string;
+  scrollDirection?: 'up' | 'down';
+}
 
 /** Service worker -> side panel, phase 1 (DOM read only — no pixels yet). */
 export type SnapshotCaptureResponse =

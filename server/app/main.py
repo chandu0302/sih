@@ -10,11 +10,24 @@ free-tier model), and the client needs a structured reason, not a raw 500.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .schemas import PlanActionRequest
 from . import vlm_client
 
 app = FastAPI(title="PrivacyLens action planner", version="0.1.0")
+
+# Phase 5: the extension's side panel (chrome-extension://<id>) calls this
+# server directly. <all_urls> in manifest.json's host_permissions already
+# lets the extension bypass CORS on its end, but permissive CORS here too
+# means this also works if that assumption is ever wrong, and costs nothing
+# for a local-dev-only server with no auth of its own to leak.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
