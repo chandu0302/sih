@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { clampToImage, createCoordinateFrame, modelBoxToImageBox } from '../lib/coords';
+import { clampToImage, createFullPageFrame, modelBoxToImageBox } from '../lib/coords';
 import type { ImageBox, ViewportContext } from '../types';
 import { computeLetterboxParams, decodeOutput, nms } from './face-detector';
 
@@ -93,7 +93,7 @@ describe('letterbox <-> modelBoxToImageBox round trip', () => {
       h: box.h * params.scale,
     };
 
-    const frame = createCoordinateFrame(VIEWPORT, imgW, imgH);
+    const frame = createFullPageFrame(VIEWPORT.clientWidth, VIEWPORT.clientHeight, imgW, imgH, VIEWPORT.dpr);
     const recovered = clampToImage(modelBoxToImageBox(modelBox, params), frame);
 
     return { original: box, recovered };

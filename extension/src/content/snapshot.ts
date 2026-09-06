@@ -62,10 +62,10 @@ const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'M
 export function captureViewportContext(): ViewportContext {
   return {
     dpr: window.devicePixelRatio,
-    // Report BOTH candidate denominators and let createCoordinateFrame decide.
-    // innerWidth includes the classic scrollbar, clientWidth excludes it; the
-    // difference is ~15px and which one matches the captured PNG is not
-    // reliably knowable in advance. See ViewportContext in types.ts.
+    // innerWidth includes the classic scrollbar, clientWidth excludes it —
+    // used by isVisibleInViewport below. Coordinate SCALE no longer derives
+    // from either (see coords.ts's createFullPageFrame); kept for the
+    // viewport-visibility check. See ViewportContext in types.ts.
     innerWidth: window.innerWidth,
     innerHeight: window.innerHeight,
     clientWidth: document.documentElement.clientWidth || window.innerWidth,

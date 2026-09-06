@@ -136,23 +136,17 @@ export interface DetectedBox {
 export interface ViewportContext {
   /** window.devicePixelRatio — recorded for diagnostics, NOT used to scale. */
   dpr: number;
-  /**
-   * window.innerWidth/Height — CSS px, INCLUDING classic scrollbars.
-   * One of two candidate denominators for the scale calculation.
-   */
+  /** window.innerWidth/Height — CSS px, INCLUDING classic scrollbars. Used by
+   *  snapshot.ts's own viewport-visibility filter; full-page capture (CDP)
+   *  no longer derives coordinate SCALE from this — see coords.ts's
+   *  createFullPageFrame, which gets an unambiguous page size from
+   *  Page.getLayoutMetrics() directly instead of guessing between this and
+   *  clientWidth/Height. */
   innerWidth: number;
   innerHeight: number;
-  /**
-   * documentElement.clientWidth/Height — CSS px, EXCLUDING classic scrollbars.
-   * The other candidate.
-   *
-   * We record both because whether captureVisibleTab's PNG includes the
-   * scrollbar is not something we should assume: it differs with overlay
-   * scrollbars (macOS, and Chrome's overlay setting) and has changed across
-   * Chrome versions. Picking wrong is a silent ~15px horizontal scale error —
-   * exactly the kind of drift that costs redaction-precision marks.
-   * createCoordinateFrame() picks between them empirically instead.
-   */
+  /** documentElement.clientWidth/Height — CSS px, EXCLUDING classic
+   *  scrollbars. Same "no longer used for scale" note as innerWidth/Height
+   *  above applies. */
   clientWidth: number;
   clientHeight: number;
   scrollX: number;
@@ -197,9 +191,17 @@ export interface DomSnapshot {
  * Phase 2 adds `detections`; Phase 3 adds `redactionManifest`.
  */
 export interface CapturePayload {
-  /** data:image/png;base64,... as returned by captureVisibleTab. */
+  /** data:image/png;base64,... covering the ENTIRE scrollable page — from
+   *  CDP's Page.captureScreenshot(captureBeyondViewport:true), not just the
+   *  current viewport. See service-worker.ts's runScreenshot(). */
   screenshotDataUrl: string;
   snapshot: DomSnapshot;
+  /** The full page's CSS size (Page.getLayoutMetrics' cssContentSize),
+   *  needed to build the post-capture real CoordinateFrame via
+   *  coords.ts's createFullPageFrame — NOT snapshot.viewport's dimensions,
+   *  which are just the current viewport. */
+  pageWidth: number;
+  pageHeight: number;
   timings: CaptureTimings;
   /** Set when the page moved between snapshot and capture. See coords.ts. */
   drift: DriftReport | null;
@@ -248,7 +250,12 @@ export interface DriftReport {
  */
 export type PanelRequest =
   | { type: 'CAPTURE_SNAPSHOT_REQUEST' }
-  | { type: 'CAPTURE_SCREENSHOT_REQUEST'; tabId: number; windowId: number };
+  | { type: 'CAPTURE_SCREENSHOT_REQUEST'; tabId: number }
+  /** Best-effort cleanup: detach the CDP debugger session if the panel's
+   *  own flow throws between a successful snapshot (debugger now attached)
+   *  and the screenshot step (which normally detaches). See App.tsx's
+   *  capture() outer catch. Fire-and-forget — never surfaced as an error. */
+  | { type: 'CAPTURE_ABORT_REQUEST'; tabId: number };
 
 /**
  * Service worker -> content script.
@@ -307,6 +314,15 @@ export interface AgentPlanRequest {
   task: string;
 }
 
+/** What the panel sends to the Phase 4 server's POST /ask. Mirrors
+ *  server/app/schemas.py's AskRequest field-for-field — `question` instead
+ *  of `task` since the response is a free-text answer, not an action. */
+export interface AskRequest {
+  image: string;
+  manifest: RedactionManifest;
+  question: string;
+}
+
 /** Mirrors server/app/schemas.py's ActionCommand field-for-field — `target`
  *  is in IMAGE-pixel space (the space the sanitized screenshot is in), NOT
  *  yet converted to a real page point. See App.tsx's use of
@@ -334,14 +350,39 @@ export interface ExecutableAction {
   scrollDirection?: 'up' | 'down';
 }
 
-/** Service worker -> side panel, phase 1 (DOM read only — no pixels yet). */
+/**
+ * Service worker -> side panel, phase 1 (DOM read only — no pixels yet).
+ *
+ * Full-page capture (CDP): this call also attaches a chrome.debugger session
+ * to the tab and reads Page.getLayoutMetrics() for the full scrollable page
+ * size — pageWidth/pageHeight, CSS px — which is the SOLE source of truth
+ * for full-page dimensions used everywhere downstream (the pre-capture
+ * identity frame for masking, and the post-capture real frame). The
+ * debugger stays attached until CAPTURE_SCREENSHOT_REQUEST's handler
+ * detaches it (or CAPTURE_ABORT_REQUEST does, on an aborted flow).
+ */
 export type SnapshotCaptureResponse =
-  | { ok: true; tabId: number; windowId: number; snapshot: DomSnapshot; injectMs: number; snapshotMs: number }
+  | {
+      ok: true;
+      tabId: number;
+      snapshot: DomSnapshot;
+      pageWidth: number;
+      pageHeight: number;
+      injectMs: number;
+      snapshotMs: number;
+    }
   | { ok: false; error: string; hint?: string };
 
 /** Service worker -> side panel, phase 2 (pixels, after the panel has masked
- *  the DOM). Unmasking happens inside this call, immediately after the
- *  pixels are captured — see service-worker.ts's captureScreenshot(). */
+ *  the DOM). Captures the ENTIRE scrollable page in one shot via CDP's
+ *  Page.captureScreenshot({captureBeyondViewport:true}), not just the
+ *  current viewport — see service-worker.ts's runScreenshot(). Unmasking
+ *  and debugger detach both happen inside this call, immediately after the
+ *  pixels are captured. */
 export type ScreenshotCaptureResponse =
   | { ok: true; screenshotDataUrl: string; screenshotMs: number }
   | { ok: false; error: string; hint?: string };
+
+/** Response to CAPTURE_ABORT_REQUEST — always {ok:true}; detach failing
+ *  (e.g. already detached) is not itself an error worth surfacing. */
+export type CaptureAbortResponse = { ok: true };

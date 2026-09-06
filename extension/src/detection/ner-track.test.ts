@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { createCoordinateFrame } from '../lib/coords';
+import { createFullPageFrame } from '../lib/coords';
 import type { ViewportContext } from '../types';
 import type { NerSpan } from './ner-detector';
 import { assembleVisibleText, findNextOccurrence, premask, spansToBoxes } from './ner-track';
@@ -80,7 +80,7 @@ const VIEWPORT: ViewportContext = {
   scrollY: 0,
   url: 'https://example.test/',
 };
-const FRAME = createCoordinateFrame(VIEWPORT, 1000, 800);
+const FRAME = createFullPageFrame(VIEWPORT.clientWidth, VIEWPORT.clientHeight, 1000, 800, VIEWPORT.dpr);
 
 function span(overrides: Partial<NerSpan>): NerSpan {
   return {

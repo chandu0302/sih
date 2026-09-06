@@ -31,7 +31,7 @@ describe('applyMasks / removeMasks', () => {
     expect(overlays.length).toBe(2);
 
     const first = overlays[0] as HTMLElement;
-    expect(first.style.position).toBe('fixed');
+    expect(first.style.position).toBe('absolute');
     expect(first.style.left).toBe('10px');
     expect(first.style.top).toBe('20px');
     expect(first.style.width).toBe('100px');

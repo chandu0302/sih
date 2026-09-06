@@ -6,14 +6,21 @@
  *
  * Three spaces exist in this system:
  *
- *   1. CSS PIXELS (viewport-relative)
- *      What getBoundingClientRect() returns. Origin = top-left of the
- *      viewport. Unaffected by scroll position (already relative).
+ *   1. CSS PIXELS (page-relative)
+ *      What getBoundingClientRect() returns. Full-page capture (below) never
+ *      actually scrolls the page — CDP renders content beyond the viewport
+ *      in place — so a rect read at any time during one capture is already
+ *      relative to the same fixed (scrollY=0) origin the captured image
+ *      uses. No separate "page-relative" transform is needed for that
+ *      reason alone; CSS pixels ARE page-relative for the duration of a
+ *      capture, by construction.
  *
  *   2. IMAGE PIXELS
- *      The coordinate system of the PNG from chrome.tabs.captureVisibleTab().
- *      Larger than CSS pixels on HiDPI displays. This is the canonical space:
- *      redaction, face detection, and the manifest all live here.
+ *      The coordinate system of the PNG from CDP's Page.captureScreenshot
+ *      (captureBeyondViewport: true) — the ENTIRE scrollable page in one
+ *      image, not just the viewport. Larger than CSS pixels on HiDPI
+ *      displays. This is the canonical space: redaction, face detection, and
+ *      the manifest all live here.
  *
  *   3. DISPLAY PIXELS
  *      The screenshot as rendered in the side panel, usually downscaled to
@@ -32,13 +39,13 @@
  * back. The image is ground truth; DPR is a hint we record for diagnostics.
  *
  * WHY THERE IS NO SCROLL TERM
- * getBoundingClientRect() is viewport-relative and captureVisibleTab()
- * captures the viewport. Same origin. Adding scrollY is a classic bug that
- * pushes every box off-screen on a scrolled page. Elements outside the
- * viewport are not in the image at all — clip them, do not translate them.
+ * getBoundingClientRect() is viewport-relative, and full-page capture never
+ * scrolls (see space 1 above) — so viewport-relative and page-relative
+ * coincide for the whole capture. Adding a scroll term would be the classic
+ * bug this reasoning exists to prevent, not a missing feature.
  */
 
-import type { DomRect2D, ImageBox, ViewportContext, DriftReport } from '../types';
+import type { DomRect2D, ImageBox, DriftReport, ViewportContext } from '../types';
 
 /**
  * The empirically derived relationship between CSS pixels and image pixels
@@ -56,74 +63,59 @@ export interface CoordinateFrame {
    * capture was resized non-uniformly and boxes will be subtly wrong.
    */
   anisotropy: number;
-  /**
-   * Which viewport denominators produced this frame, e.g. "client/client".
-   * Surfaced in the metrics panel: if this flips between captures on the same
-   * page, something about the capture path changed and boxes are suspect.
-   */
+  /** Diagnostic label for the metrics panel — how this frame's scale was
+   *  derived. See createFullPageFrame's doc for what the values mean. */
   basis: string;
 }
 
 /**
- * Build the frame from the viewport context and the ACTUAL decoded image
- * dimensions (img.naturalWidth / naturalHeight — not the CSS size of the
- * <img> element, which is the downscaled display size).
+ * Build the frame for a full-page capture. Unlike the old viewport-only
+ * design (which had to guess between two ambiguous viewport-width
+ * candidates — see git history — because captureVisibleTab never told you
+ * which one it captured), CDP's Page.getLayoutMetrics() gives an
+ * unambiguous CSS-pixel page size directly, and the capture was explicitly
+ * requested at `clip: {width: pageWidth, height: pageHeight}` — so scale is
+ * derived directly per axis, no candidate search needed.
+ *
+ * Two call shapes, both legitimate:
+ *   - IDENTITY (scale exactly 1): pass pageWidth/pageHeight as BOTH the page
+ *     size AND the image size (imageWidth===pageWidth). Used before any
+ *     screenshot exists yet, purely to place pre-capture DOM masks in the
+ *     same page-relative space the eventual image will use.
+ *   - REAL: pass the ACTUAL decoded image dimensions (img.naturalWidth /
+ *     naturalHeight) once the CDP screenshot has come back.
+ *
+ * `anisotropy` is still computed and still worth watching in the metrics
+ * panel: this file no longer needs it to CHOOSE a candidate, but a
+ * meaningful deviation from 1.0 still means something about the capture
+ * resized non-uniformly and boxes are suspect.
  */
-export function createCoordinateFrame(
-  viewport: ViewportContext,
+export function createFullPageFrame(
+  pageWidth: number,
+  pageHeight: number,
   imageWidth: number,
   imageHeight: number,
+  dpr: number,
 ): CoordinateFrame {
-  const widths = [viewport.clientWidth, viewport.innerWidth];
-  const heights = [viewport.clientHeight, viewport.innerHeight];
-
-  if (widths.every((w) => !(w > 0)) || heights.every((h) => !(h > 0))) {
-    throw new Error('Invalid viewport dimensions; cannot derive coordinate scale.');
+  if (!(pageWidth > 0) || !(pageHeight > 0)) {
+    throw new Error('Invalid page dimensions; cannot derive coordinate scale.');
   }
-  if (imageWidth <= 0 || imageHeight <= 0) {
+  if (!(imageWidth > 0) || !(imageHeight > 0)) {
     throw new Error('Invalid image dimensions; capture may have failed.');
   }
 
-  // A screenshot is a UNIFORM raster of the viewport, so the true scale is
-  // isotropic: scaleX must equal scaleY. That gives us a way to identify the
-  // correct denominators instead of assuming them — try each candidate pair
-  // and keep the one whose anisotropy is closest to 1.0.
-  //
-  // The wrong width denominator is off by the scrollbar (~15px on a ~1500px
-  // viewport, ~1% anisotropy); the right one lands within floating-point
-  // noise. The separation is unambiguous in practice.
-  const labels = ['client', 'inner'] as const;
-  let best: CoordinateFrame | null = null;
-  let bestError = Infinity;
+  const scaleX = imageWidth / pageWidth;
+  const scaleY = imageHeight / pageHeight;
 
-  for (let wi = 0; wi < widths.length; wi++) {
-    for (let hi = 0; hi < heights.length; hi++) {
-      const w = widths[wi];
-      const h = heights[hi];
-      if (!(w > 0) || !(h > 0)) continue;
-
-      const scaleX = imageWidth / w;
-      const scaleY = imageHeight / h;
-      const anisotropy = scaleX / scaleY;
-      const error = Math.abs(anisotropy - 1);
-
-      if (error < bestError) {
-        bestError = error;
-        best = {
-          scaleX,
-          scaleY,
-          imageWidth,
-          imageHeight,
-          reportedDpr: viewport.dpr,
-          anisotropy,
-          basis: `${labels[wi]}/${labels[hi]}`,
-        };
-      }
-    }
-  }
-
-  if (!best) throw new Error('Could not derive a coordinate scale from the viewport.');
-  return best;
+  return {
+    scaleX,
+    scaleY,
+    imageWidth,
+    imageHeight,
+    reportedDpr: dpr,
+    anisotropy: scaleX / scaleY,
+    basis: imageWidth === pageWidth && imageHeight === pageHeight ? 'identity' : 'page/cdp-image',
+  };
 }
 
 /**

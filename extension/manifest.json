@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "On-device visual perception for lightweight browser agents. Phase 1: capture and coordinate alignment.",
 
-  "permissions": ["activeTab", "scripting", "sidePanel"],
+  "permissions": ["activeTab", "scripting", "sidePanel", "debugger"],
   "host_permissions": ["<all_urls>"],
 
   "content_security_policy": {
