@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentPlanRequest } from '../types';
-import { planAction, SERVER_URL } from './server-client';
+import type { AgentPlanRequest, AskRequest } from '../types';
+import { askQuestion, ASK_URL, planAction, PLAN_ACTION_URL } from './server-client';
 
 const sampleRequest: AgentPlanRequest = {
   image: 'data:image/png;base64,AAAA',
   manifest: { regions: [] },
   task: 'click submit',
+};
+
+const sampleAskRequest: AskRequest = {
+  image: 'data:image/png;base64,AAAA',
+  manifest: { regions: [] },
+  question: 'What kind of form is this?',
 };
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -20,7 +26,7 @@ describe('planAction', () => {
     vi.unstubAllGlobals();
   });
 
-  it('posts the request body to SERVER_URL', async () => {
+  it('posts the request body to PLAN_ACTION_URL', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse(200, { ok: true, action: { action: 'done', reasoning: 'x' } }),
     );
@@ -29,7 +35,7 @@ describe('planAction', () => {
     await planAction(sampleRequest);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      SERVER_URL,
+      PLAN_ACTION_URL,
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify(sampleRequest),
@@ -88,5 +94,53 @@ describe('planAction', () => {
     const result = await planAction(sampleRequest);
 
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('askQuestion', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('posts the request body to ASK_URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true, answer: 'A contact form.' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await askQuestion(sampleAskRequest);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      ASK_URL,
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(sampleAskRequest) }),
+    );
+  });
+
+  it('returns the answer on a successful ok:true response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, { ok: true, answer: 'A contact form.' })));
+
+    const result = await askQuestion(sampleAskRequest);
+
+    expect(result).toEqual({ ok: true, answer: 'A contact form.' });
+  });
+
+  it('surfaces the server error string on an ok:false response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(200, { ok: false, error: 'OPENROUTER_API_KEY is not set' })),
+    );
+
+    const result = await askQuestion(sampleAskRequest);
+
+    expect(result).toEqual({ ok: false, error: 'OPENROUTER_API_KEY is not set' });
+  });
+
+  it('surfaces a network failure (server not running) as a value', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fetch failed')));
+
+    const result = await askQuestion(sampleAskRequest);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('Could not reach the action-planner server');
+    }
   });
 });

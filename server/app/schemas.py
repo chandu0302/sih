@@ -45,6 +45,16 @@ class PlanActionRequest(BaseModel):
     task: str
 
 
+class AskRequest(BaseModel):
+    """One Q&A turn's input — same sanitized-image contract as
+    PlanActionRequest, `question` instead of `task` since the answer is
+    free text, not a structured action."""
+
+    image: str  # data:image/png;base64,...
+    manifest: RedactionManifest
+    question: str
+
+
 class ClickTarget(BaseModel):
     x: int
     y: int

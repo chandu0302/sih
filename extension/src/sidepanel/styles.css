@@ -90,27 +90,6 @@ body {
   margin: 0 0 10px;
 }
 
-.capture-btn {
-  width: 100%;
-  padding: 9px 12px;
-  background: var(--signal);
-  color: var(--ink);
-  border: none;
-  border-radius: 3px;
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 120ms ease;
-}
-
-.capture-btn:hover:not(:disabled) { background: #6bdcea; }
-.capture-btn:disabled { opacity: 0.5; cursor: default; }
-.capture-btn:focus-visible {
-  outline: 2px solid var(--paper);
-  outline-offset: 2px;
-}
-
 /* ---------------------------------------------------------------- */
 /* Readout strip — derived scale, the number that proves the math     */
 /* ---------------------------------------------------------------- */
@@ -148,18 +127,80 @@ body {
 .readout-value.warn { color: var(--alert); }
 
 /* ---------------------------------------------------------------- */
-/* Stage — screenshot + overlay                                      */
+/* Chat thread — the message list                                    */
 /* ---------------------------------------------------------------- */
 
-.scroll {
+.chat-thread {
   flex: 1 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--pad) 0;
 }
+
+.msg {
+  margin: 0 var(--pad);
+  max-width: 100%;
+}
+
+.msg p { margin: 0; }
+
+.msg-user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--signal-soft);
+  border: 1px solid var(--signal);
+  border-radius: 8px 8px 2px 8px;
+  padding: 8px 10px;
+}
+
+.msg-mode-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--signal);
+  margin-bottom: 3px;
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  max-width: 90%;
+  background: var(--panel-hi);
+  border-radius: 8px 8px 8px 2px;
+  padding: 8px 10px;
+}
+
+.msg-assistant-error { border-left: 2px solid var(--alert); }
+
+.msg-detail {
+  margin-top: 4px !important;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.msg-error {
+  background: rgba(242, 96, 60, 0.08);
+  border-left: 2px solid var(--alert);
+  padding: 8px 10px;
+  border-radius: 4px;
+}
+
+.msg-error .msg-hint { margin-top: 4px !important; color: var(--muted); font-size: 12px; }
+
+.msg-capture { display: flex; flex-direction: column; }
+
+/* ---------------------------------------------------------------- */
+/* Stage — screenshot + overlay                                      */
+/* ---------------------------------------------------------------- */
 
 .stage {
   position: relative;
-  margin: var(--pad);
+  margin: 0 0 var(--pad);
   border: 1px solid var(--rule);
   background: var(--panel);
   line-height: 0;
@@ -169,6 +210,10 @@ body {
   width: 100%;
   height: auto;
   display: block;
+}
+
+.stage img.zoomable {
+  cursor: zoom-in;
 }
 
 .overlay {
@@ -227,7 +272,7 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   list-style: none;
-  margin: 0 var(--pad) 8px;
+  margin: 0 0 8px;
   padding: 0;
 }
 
@@ -252,7 +297,7 @@ body {
 }
 
 .metrics {
-  margin: 0 var(--pad) var(--pad);
+  margin: 8px 0 0;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--muted);
@@ -263,7 +308,7 @@ body {
  * redaction overlay on demand, never raw pixels or matched text. */
 .overlay-toggle {
   display: block;
-  margin: 8px var(--pad);
+  margin: 0 0 8px;
   padding: 6px 10px;
   background: transparent;
   color: var(--muted);
@@ -281,68 +326,152 @@ body {
   outline-offset: 1px;
 }
 
-/* Phase 5: one scripted action — task input, run button, result line. */
-.agent-panel {
-  margin: 0 var(--pad) var(--pad);
-  padding: 10px;
-  border: 1px solid var(--rule);
-  border-radius: 4px;
-  background: var(--panel);
-}
+/* ---------------------------------------------------------------- */
+/* Composer — mode toggle, capture button, message input             */
+/* ---------------------------------------------------------------- */
 
-.agent-label {
-  display: block;
-  font-family: var(--sans);
-  font-size: 11px;
-  color: var(--muted);
-  margin-bottom: 5px;
-}
-
-.agent-task {
-  width: 100%;
-  resize: vertical;
-  padding: 6px 8px;
+.composer {
+  flex: 0 0 auto;
+  padding: var(--pad);
+  border-top: 1px solid var(--rule);
   background: var(--ink);
+}
+
+.composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.composer-row + .composer-row { margin-top: 8px; }
+
+/* Single dropdown selector (Agent / Ask / Capture), not a toggle + separate
+ * button — matches the reference interaction pattern (mode picker anchored
+ * to the composer, one primary action button whose behavior follows the
+ * selected mode). */
+.mode-select {
+  position: relative;
+}
+
+.mode-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: var(--panel-hi);
   color: var(--paper);
   border: 1px solid var(--rule);
-  border-radius: 3px;
-  font-family: var(--sans);
-  font-size: 12px;
-  margin-bottom: 8px;
-}
-
-.agent-task:focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: 1px;
-}
-
-.agent-run-btn {
-  width: 100%;
-  padding: 7px 10px;
-  background: var(--signal);
-  color: var(--ink);
-  border: none;
-  border-radius: 3px;
+  border-radius: 4px;
   font-family: var(--sans);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.agent-run-btn:disabled { opacity: 0.5; cursor: default; }
-.agent-run-btn:hover:not(:disabled) { background: #6bdcea; }
+.mode-select-trigger:hover { background: var(--rule); }
+.mode-select-caret { color: var(--muted); font-size: 10px; }
 
-.agent-status {
-  margin: 8px 0 0;
-  font-family: var(--mono);
-  font-size: 11px;
+.mode-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 10;
+  min-width: 120px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
-.agent-status.ok { color: var(--signal); }
-.agent-status.error { color: var(--alert); }
+.mode-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--paper);
+  border: none;
+  border-radius: 3px;
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mode-menu button:hover { background: var(--panel-hi); }
+.mode-menu button.active { color: var(--signal); font-weight: 600; }
+
+.composer-input {
+  flex: 1 1 auto;
+  resize: vertical;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+}
+
+.composer-input:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+.composer-input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.send-btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  padding: 0 16px;
+  background: var(--signal);
+  color: var(--ink);
+  border: none;
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send-btn:disabled { opacity: 0.5; cursor: default; }
+.send-btn:hover:not(:disabled) { background: #6bdcea; }
+
+.composer-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- */
+/* Details — collapsed diagnostics (readout, metrics, element list)  */
+/* ---------------------------------------------------------------- */
+
+.details {
+  margin-top: 4px;
+  border-top: 1px solid var(--rule);
+  padding-top: 6px;
+}
+
+.details summary {
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.details summary:hover { color: var(--paper); }
+
+.details .readout { margin: 8px 0 0; border: 1px solid var(--rule); border-bottom: none; }
 
 .manifest-summary {
-  margin: 0 var(--pad) var(--pad);
+  margin: 0 0 8px;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--muted);
@@ -356,7 +485,7 @@ body {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 var(--pad) 6px;
+  padding: 8px 0 6px;
 }
 
 .section-head h2 {
@@ -376,7 +505,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.list { list-style: none; margin: 0; padding: 0 var(--pad) var(--pad); }
+.list { list-style: none; margin: 0; padding: 0 0 var(--pad); }
 
 .row {
   display: grid;
@@ -428,7 +557,7 @@ body {
 /* ---------------------------------------------------------------- */
 
 .notice {
-  margin: var(--pad);
+  margin: 0 0 var(--pad);
   padding: 10px 12px;
   border-left: 2px solid var(--alert);
   background: rgba(242, 96, 60, 0.08);

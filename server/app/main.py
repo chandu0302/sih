@@ -12,7 +12,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .schemas import PlanActionRequest
+from .schemas import AskRequest, PlanActionRequest
 from . import vlm_client
 
 app = FastAPI(title="PrivacyLens action planner", version="0.1.0")
@@ -43,3 +43,13 @@ async def plan_action_endpoint(req: PlanActionRequest) -> dict:
         return {"ok": False, "error": str(err)}
 
     return {"ok": True, "action": action.model_dump()}
+
+
+@app.post("/ask")
+async def ask_endpoint(req: AskRequest) -> dict:
+    try:
+        answer = await vlm_client.ask_question(req)
+    except Exception as err:  # noqa: BLE001 — same convention as /plan-action
+        return {"ok": False, "error": str(err)}
+
+    return {"ok": True, "answer": answer}

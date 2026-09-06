@@ -1,10 +1,12 @@
 /**
  * SIH 26171 — side panel.
  *
- * Phase 1's job was to prove the coordinate contract: do boxes computed by
- * coords.ts land exactly on their elements. Phase 2 (this file, as of
- * Brief 5) builds on that proof to run all three PII detection tracks and
- * show one unified, deduped overlay — the thing a judge actually sees.
+ * Chat-style redesign: the panel is a message thread (Capture / user /
+ * assistant bubbles) with a composer at the bottom, not the earlier flat
+ * form-and-status-paragraph layout. The underlying pipelines are UNCHANGED —
+ * capture()'s CDP sequence and the three-track detection effect are the same
+ * logic as before, just pushing their settled result onto a `messages` array
+ * instead of setting flat top-level state.
  *
  *   Track 1 (detectDomPii)  — content script, live DOM.
  *   Track 2 (detectFaces)   — panel, screenshot pixels + WebGPU.
@@ -19,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   clampToImage,
-  createCoordinateFrame,
+  createFullPageFrame,
   detectDrift,
   domRectToImageBox,
   imageBoxToCssBox,
@@ -31,13 +33,14 @@ import { detectFaces, warmFaceModel } from '../detection/face-detector';
 import { mergeDetections } from '../detection/box-merger';
 import { blurFaces } from '../redaction/face-blur';
 import { buildRedactionManifest } from '../redaction/manifest';
-import { planAction } from '../agent/server-client';
+import { askQuestion, planAction } from '../agent/server-client';
 import { sendToContent } from '../lib/messaging';
 import type {
   CapturePayload,
   DetectedBox,
   ExecutableAction,
   PiiType,
+  RedactionManifest,
   ScreenshotCaptureResponse,
   SnapshotCaptureResponse,
   SnapshotElement,
@@ -88,99 +91,169 @@ interface DetectionMetrics {
   dupesCollapsed: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* Chat message model                                                  */
+/* ------------------------------------------------------------------ */
+
+interface CaptureMessage {
+  id: string;
+  role: 'capture';
+  ts: number;
+  payload: CapturePayload;
+  sanitizedScreenshotDataUrl: string | null;
+  detections: DetectedBox[];
+  manifest: RedactionManifest;
+  frame: CoordinateFrame;
+  metrics: DetectionMetrics | null;
+  detectWarning: string | null;
+}
+
+interface UserMessage {
+  id: string;
+  role: 'user';
+  ts: number;
+  mode: 'ask' | 'agent';
+  text: string;
+}
+
+interface AssistantAskMessage {
+  id: string;
+  role: 'assistant-ask';
+  ts: number;
+  answer: string;
+}
+
+interface AssistantAgentMessage {
+  id: string;
+  role: 'assistant-agent';
+  ts: number;
+  reasoning: string;
+  ok: boolean;
+  detail?: string;
+}
+
+interface ErrorChatMessage {
+  id: string;
+  role: 'error';
+  ts: number;
+  message: string;
+  hint?: string;
+}
+
+type ChatMessage =
+  | CaptureMessage
+  | UserMessage
+  | AssistantAskMessage
+  | AssistantAgentMessage
+  | ErrorChatMessage;
+
+let msgCounter = 0;
+function newId(): string {
+  return `m${Date.now()}-${msgCounter++}`;
+}
+
 export default function App() {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const pushMessage = useCallback((msg: ChatMessage) => {
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
   const [payload, setPayload] = useState<CapturePayload | null>(null);
-  const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-
-  /** img.clientWidth / img.naturalWidth — set once the bitmap decodes. */
-  const [displayScale, setDisplayScale] = useState(0);
-  const imgRef = useRef<HTMLImageElement>(null);
-
-  // Phase 2 unified detections (all three tracks, merged) + Step 5 metrics.
-  const [detections, setDetections] = useState<DetectedBox[]>([]);
-  const [detectWarning, setDetectWarning] = useState<string | null>(null);
-  const [metrics, setMetrics] = useState<DetectionMetrics | null>(null);
-  /** Phase 3b: payload.screenshotDataUrl is already text-masked (Phase 3a
-   *  happens before capture); this is that bitmap with detected faces
-   *  additionally blurred. Null until the face track's blur pass finishes
-   *  (or immediately, if no faces were found — see the detection effect). */
-  const [sanitizedScreenshotDataUrl, setSanitizedScreenshotDataUrl] = useState<string | null>(
-    null,
-  );
-  /** Phase 3c: OFF by default — the default view is the clean sanitized
-   *  output (what a real downstream consumer would see). Toggling ON
-   *  overlays the redaction regions for inspection; it never reveals raw
-   *  pixels or matched text, only type/location/confidence — see
-   *  redaction/manifest.ts's doc comment on why. */
-  const [showRedactionOverlay, setShowRedactionOverlay] = useState(false);
   /** Which payload the detection pass has already run for — a ref, not
    *  state, because it must not itself trigger a re-run when it changes. */
   const detectRanFor = useRef<CapturePayload | null>(null);
+  /** Set by capture() right before the screenshot step, read once by the
+   *  detection effect so a pre-mask warning (computed before `payload` even
+   *  exists) still reaches the eventual capture message. */
+  const preMaskWarningRef = useRef<string | null>(null);
 
-  /** Phase 5: one scripted action, not a loop — see server-client.ts's doc
-   *  comment for why this is a plain fetch rather than a WebSocket. */
-  const [task, setTask] = useState('');
-  const [agentBusy, setAgentBusy] = useState(false);
-  const [agentStatus, setAgentStatus] = useState<{ ok: boolean; detail: string } | null>(null);
+  /** 'capture' is the default — matches the reference interaction pattern
+   *  (a single mode dropdown covering all three actions, not a separate
+   *  always-visible Capture button). */
+  const [mode, setMode] = useState<'agent' | 'ask' | 'capture'>('capture');
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+  const [inputText, setInputText] = useState('');
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(e.target as Node)) {
+        setModeMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [modeMenuOpen]);
+
+  const threadEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     warmFaceModel().catch((err) => console.error('[SIH] Face warm-up failed', err));
     warmNerModel().catch((err) => console.error('[SIH] NER warm-up failed', err));
   }, []);
 
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length]);
+
   /**
    * Phase 3a's redact-before-capture design forces this into two
-   * service-worker round trips with a masking phase in between, replacing
-   * what was one CAPTURE_REQUEST:
+   * service-worker round trips with a masking phase in between:
    *
-   *   1. CAPTURE_SNAPSHOT_REQUEST — DOM read only, no pixels yet.
+   *   1. CAPTURE_SNAPSHOT_REQUEST — DOM read, no pixels yet, but the
+   *      service worker also attaches CDP here and learns the full page's
+   *      CSS size (pageWidth/pageHeight) — the sole source of truth for
+   *      "how big is this page," used for the identity frame below AND
+   *      later for the real post-capture frame.
    *   2. Detect text PII under a throwaway IDENTITY frame (scale 1, built
-   *      straight from the viewport — no image exists yet to derive a real
-   *      scale from) and mask it on the live page via APPLY_MASK_REQUEST.
-   *   3. CAPTURE_SCREENSHOT_REQUEST — pixels, now that text PII is masked.
-   *      The service worker unmasks immediately after, inside that call.
+   *      from the FULL PAGE size, not just the current viewport — a mask
+   *      1 or 4 viewports down the page must land at its real page-relative
+   *      position, not get clamped away as "off-screen") and mask it on the
+   *      live page via APPLY_MASK_REQUEST.
+   *   3. CAPTURE_SCREENSHOT_REQUEST — the ENTIRE scrollable page in one CDP
+   *      screenshot, now that text PII is masked. The service worker
+   *      unmasks and detaches the debugger immediately after, inside that
+   *      call.
    *
    * A pre-mask detection failure does not abort the capture — it degrades to
-   * "nothing masked" (see the per-step try/catch below), same fault-
-   * tolerance posture as the post-capture detection effect. That degraded
-   * state is surfaced via detectWarning, not swallowed: an unmasked capture
-   * is the one failure mode this project cannot be silent about.
+   * "nothing masked" (see the per-step try/catch below). That degraded
+   * state is surfaced via the eventual capture message's detectWarning, not
+   * swallowed: an unmasked capture is the one failure mode this project
+   * cannot be silent about.
+   *
+   * If anything throws AFTER phase 1 succeeds (debugger now attached) but
+   * BEFORE phase 3 completes (which normally detaches it), the outer catch
+   * below fires a best-effort CAPTURE_ABORT_REQUEST so the debugger session
+   * — and the "this extension is debugging this browser" banner — never
+   * outlives one capture cycle on an unexpected failure.
+   *
+   * Failures push an `error`-role chat message rather than a separate
+   * top-level error banner — one message-driven UI, not two.
    */
   const capture = useCallback(async () => {
     setBusy(true);
-    setError(null);
-    setSelected(null);
-    setDisplayScale(0);
-    setDetections([]);
-    setDetectWarning(null);
-    setMetrics(null);
-    setSanitizedScreenshotDataUrl(null);
-    detectRanFor.current = null;
-
     const totalStart = performance.now();
+    let attachedTabId: number | null = null;
 
     try {
-      // --- Phase 1: DOM snapshot only ---------------------------------
+      // --- Phase 1: DOM snapshot + full page size ---------------------
       const snapRes = (await chrome.runtime.sendMessage({
         type: 'CAPTURE_SNAPSHOT_REQUEST',
       })) as SnapshotCaptureResponse;
 
       if (!snapRes) throw new Error('No response from the extension worker.');
       if (!snapRes.ok) {
-        setError({ message: snapRes.error, hint: snapRes.hint });
-        setPayload(null);
+        pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: snapRes.error, hint: snapRes.hint });
         return;
       }
-      const { tabId, windowId, snapshot, injectMs, snapshotMs } = snapRes;
+      const { tabId, snapshot, pageWidth, pageHeight, injectMs, snapshotMs } = snapRes;
+      attachedTabId = tabId; // debugger is attached from this point on
 
       // --- Phase 2: detect text PII (identity frame) and mask it ------
-      const identityFrame = createCoordinateFrame(
-        snapshot.viewport,
-        snapshot.viewport.clientWidth,
-        snapshot.viewport.clientHeight,
-      );
+      const identityFrame = createFullPageFrame(pageWidth, pageHeight, pageWidth, pageHeight, snapshot.viewport.dpr);
 
       const preMaskWarnings: string[] = [];
       let domMaskBoxes: DetectedBox[] = [];
@@ -219,21 +292,18 @@ export default function App() {
         preMaskWarnings.push(`mask-apply: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      if (preMaskWarnings.length > 0) {
-        setDetectWarning(preMaskWarnings.join('; '));
-      }
+      preMaskWarningRef.current = preMaskWarnings.length > 0 ? preMaskWarnings.join('; ') : null;
 
       // --- Phase 3: pixels, now that text PII is masked ---------------
       const shotRes = (await chrome.runtime.sendMessage({
         type: 'CAPTURE_SCREENSHOT_REQUEST',
         tabId,
-        windowId,
       })) as ScreenshotCaptureResponse;
+      attachedTabId = null; // service worker detaches inside this call regardless of ok/error
 
       if (!shotRes) throw new Error('No response from the extension worker.');
       if (!shotRes.ok) {
-        setError({ message: shotRes.error, hint: shotRes.hint });
-        setPayload(null);
+        pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: shotRes.error, hint: shotRes.hint });
         return;
       }
 
@@ -252,6 +322,8 @@ export default function App() {
       setPayload({
         screenshotDataUrl: shotRes.screenshotDataUrl,
         snapshot,
+        pageWidth,
+        pageHeight,
         drift,
         tabId,
         timings: {
@@ -262,60 +334,34 @@ export default function App() {
         },
       });
     } catch (err) {
-      setError({
+      pushMessage({
+        id: newId(),
+        role: 'error',
+        ts: Date.now(),
         message: err instanceof Error ? err.message : String(err),
         hint: 'Reload the extension from chrome://extensions and try again.',
       });
-      setPayload(null);
+
+      // The debugger session was attached (phase 1 succeeded) but this
+      // capture never reached the point that normally detaches it — clean
+      // up so the debugging banner doesn't outlive this failed attempt.
+      if (attachedTabId !== null) {
+        chrome.runtime
+          .sendMessage({ type: 'CAPTURE_ABORT_REQUEST', tabId: attachedTabId })
+          .catch(() => undefined);
+      }
     } finally {
       setBusy(false);
     }
-  }, []);
-
-  /**
-   * The moment the coordinate contract is exercised. We read naturalWidth /
-   * naturalHeight — the true bitmap size — NOT clientWidth, which is the
-   * downscaled size the panel renders at.
-   */
-  const onImageLoad = useCallback(() => {
-    const img = imgRef.current;
-    if (!img || !img.naturalWidth) return;
-    setDisplayScale(img.clientWidth / img.naturalWidth);
-  }, []);
-
-  const frame: CoordinateFrame | null = useMemo(() => {
-    const img = imgRef.current;
-    if (!payload || !img || !img.naturalWidth || displayScale === 0) return null;
-    try {
-      return createCoordinateFrame(
-        payload.snapshot.viewport,
-        img.naturalWidth,
-        img.naturalHeight,
-      );
-    } catch {
-      return null;
-    }
-  }, [payload, displayScale]);
-
-  const boxes: DrawnBox[] = useMemo(() => {
-    if (!payload || !frame || displayScale === 0) return [];
-
-    return payload.snapshot.elements.flatMap((el) => {
-      // CSS px -> image px -> clip -> display px. Every conversion via coords.ts.
-      const imageBox = clampToImage(domRectToImageBox(el.rect, frame), frame);
-      if (!imageBox) return [];
-      const css = imageBoxToCssBox(imageBox, displayScale);
-      return [{ nodeId: el.nodeId, ...css, isInteractive: el.isInteractive }];
-    });
-  }, [payload, frame, displayScale]);
+  }, [pushMessage]);
 
   /**
    * The Phase-2 detection pass: all three tracks, run concurrently, each
-   * independently fault-tolerant, merged, timed.
-   *
-   * Keyed on [payload, frame] like the DOM `boxes` memo above — same frame,
-   * so every track's boxes land in the same space. Guarded by detectRanFor
-   * so a `frame` recompute for the SAME payload does not re-issue the pass.
+   * independently fault-tolerant, merged, timed. Decodes the captured image
+   * ONCE, upfront (needed for both the coordinate frame and face detection —
+   * previously each was derived separately, from a DOM <img> load event and
+   * from the face track's own fetch respectively; decoding once here removes
+   * that duplication and the render-timing dependency it carried).
    *
    * DEVIATION FROM THE BRIEF'S LITERAL PSEUDOCODE, worth flagging: the brief
    * sketches `Promise.all([detectFaces, DOM_PII_REQUEST, NER_TEXT_REQUEST])`
@@ -329,7 +375,7 @@ export default function App() {
    * behavioral change from what the brief specifies.
    */
   useEffect(() => {
-    if (!payload || !frame) return;
+    if (!payload) return;
     if (detectRanFor.current === payload) return;
     detectRanFor.current = payload;
 
@@ -337,6 +383,46 @@ export default function App() {
 
     (async () => {
       const totalStart = performance.now();
+
+      let image: ImageBitmap;
+      try {
+        const blob = await (await fetch(payload.screenshotDataUrl)).blob();
+        image = await createImageBitmap(blob);
+      } catch (err) {
+        if (!cancelled) {
+          pushMessage({
+            id: newId(),
+            role: 'error',
+            ts: Date.now(),
+            message: 'Failed to decode the captured image.',
+            hint: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+
+      let frame: CoordinateFrame;
+      try {
+        frame = createFullPageFrame(
+          payload.pageWidth,
+          payload.pageHeight,
+          image.width,
+          image.height,
+          payload.snapshot.viewport.dpr,
+        );
+      } catch (err) {
+        if (!cancelled) {
+          pushMessage({
+            id: newId(),
+            role: 'error',
+            ts: Date.now(),
+            message: 'Failed to compute the coordinate frame for this capture.',
+            hint: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+
       let faceBoxes: DetectedBox[] = [];
       let domBoxes: DetectedBox[] = [];
       let nerBoxes: DetectedBox[] = [];
@@ -350,8 +436,6 @@ export default function App() {
       const faceTrack = (async () => {
         const start = performance.now();
         try {
-          const blob = await (await fetch(payload.screenshotDataUrl)).blob();
-          const image = await createImageBitmap(blob);
           faceBoxes = await detectFaces(image, frame);
 
           if (faceBoxes.length > 0) {
@@ -418,80 +502,88 @@ export default function App() {
 
       const raw = [...faceBoxes, ...domBoxes, ...nerBoxes];
       const merged = mergeDetections(raw);
+      const manifest = buildRedactionManifest(merged);
 
-      setDetections(merged);
-      setSanitizedScreenshotDataUrl(blurredDataUrl);
-      // Pre-mask warnings from capture() are not overwritten with an empty
-      // string when this post-capture pass finds nothing wrong of its own —
-      // an unmasked-text warning matters even if faces/dom/ner all succeed.
-      setDetectWarning((prev) => {
-        const combined = warnings.length > 0 ? warnings.join('; ') : null;
-        if (!combined) return prev;
-        return prev ? `${prev}; ${combined}` : combined;
-      });
-      setMetrics({
-        faceMs: Math.round(faceMs),
-        domMs: Math.round(domMs),
-        nerMs: Math.round(nerMs),
-        totalMs: Math.round(performance.now() - totalStart),
-        faceCount: faceBoxes.length,
-        domCount: domBoxes.length,
-        nerCount: nerBoxes.length,
-        mergedCount: merged.length,
-        dupesCollapsed: raw.length - merged.length,
+      // Pre-mask warnings from capture() are not dropped when this
+      // post-capture pass finds nothing wrong of its own — an unmasked-text
+      // warning matters even if faces/dom/ner all succeed.
+      const ownWarning = warnings.length > 0 ? warnings.join('; ') : null;
+      const preWarning = preMaskWarningRef.current;
+      const detectWarning =
+        preWarning && ownWarning ? `${preWarning}; ${ownWarning}` : (preWarning ?? ownWarning);
+
+      pushMessage({
+        id: newId(),
+        role: 'capture',
+        ts: Date.now(),
+        payload,
+        sanitizedScreenshotDataUrl: blurredDataUrl,
+        detections: merged,
+        manifest,
+        frame,
+        metrics: {
+          faceMs: Math.round(faceMs),
+          domMs: Math.round(domMs),
+          nerMs: Math.round(nerMs),
+          totalMs: Math.round(performance.now() - totalStart),
+          faceCount: faceBoxes.length,
+          domCount: domBoxes.length,
+          nerCount: nerBoxes.length,
+          mergedCount: merged.length,
+          dupesCollapsed: raw.length - merged.length,
+        },
+        detectWarning,
       });
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [payload, frame]);
+  }, [payload, pushMessage]);
 
-  const detectedDrawnBoxes = useMemo(() => {
-    if (displayScale === 0) return [];
-    return detections.map((box) => ({
-      ...imageBoxToCssBox(box.imageBox, displayScale),
-      piiType: box.piiType,
-      subtype: box.subtype,
-      source: box.source,
-      confidence: box.confidence,
-    }));
-  }, [detections, displayScale]);
-
-  /** Only the types actually present this capture — an always-full 12-chip
-   *  legend would be noise on a page with two PII types on it. */
-  const presentTypes = useMemo(() => {
-    const seen = new Set<PiiType>();
-    for (const box of detections) seen.add(box.piiType);
-    return Array.from(seen);
-  }, [detections]);
-
-  /** Phase 3c: what Phase 4 will eventually send alongside the sanitized
-   *  image. Built from the same merged `detections` the overlay already
-   *  draws — no new detection pass, no raw text (see manifest.ts). */
-  const manifest = useMemo(() => buildRedactionManifest(detections), [detections]);
+  /** The most recent capture message — Ask/Agent messages operate against
+   *  its image+manifest+frame. Re-capturing appends a new one, becoming the
+   *  new context for subsequent messages. */
+  const lastCapture = useMemo<CaptureMessage | null>(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === 'capture') return msg;
+    }
+    return null;
+  }, [messages]);
 
   /**
-   * Phase 5: send the current sanitized capture + task to the Phase 4
-   * server, convert the returned action's target from image-pixel space
-   * (what the server/VLM sees) to a real page CSS point (via coords.ts —
-   * no coordinate math here), and have the content script execute it.
+   * One chat turn: append the user's message, then dispatch to Ask
+   * (free-text Q&A via the Phase 4 server's /ask) or Agent (the existing
+   * Phase 5 one-scripted-action flow — plan, convert coordinates, execute).
    *
-   * ONE action, not a loop: this function runs once per click, does not
-   * re-capture, and does not chain further steps on `done`/`click`/etc.
+   * ONE action per Agent turn, not a loop: this does not re-capture and does
+   * not chain further steps on `done`/`click`/etc.
    */
-  const runAgentStep = useCallback(async () => {
-    if (!payload || !frame || !task.trim()) return;
+  const sendMessage = useCallback(async () => {
+    const text = inputText.trim();
+    if (mode === 'capture' || !text || !lastCapture || sending) return;
 
-    setAgentBusy(true);
-    setAgentStatus(null);
+    setInputText('');
+    setSending(true);
+    pushMessage({ id: newId(), role: 'user', ts: Date.now(), mode, text });
+
+    const image = lastCapture.sanitizedScreenshotDataUrl ?? lastCapture.payload.screenshotDataUrl;
 
     try {
-      const image = sanitizedScreenshotDataUrl ?? payload.screenshotDataUrl;
-      const planned = await planAction({ image, manifest, task });
+      if (mode === 'ask') {
+        const result = await askQuestion({ image, manifest: lastCapture.manifest, question: text });
+        if (!result.ok) {
+          pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: result.error });
+        } else {
+          pushMessage({ id: newId(), role: 'assistant-ask', ts: Date.now(), answer: result.answer });
+        }
+        return;
+      }
 
+      const planned = await planAction({ image, manifest: lastCapture.manifest, task: text });
       if (!planned.ok) {
-        setAgentStatus({ ok: false, detail: planned.error });
+        pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: planned.error });
         return;
       }
 
@@ -500,215 +592,407 @@ export default function App() {
 
       if (cmd.action === 'click') {
         if (!cmd.target) {
-          setAgentStatus({ ok: false, detail: "Server returned 'click' with no target." });
+          pushMessage({
+            id: newId(),
+            role: 'error',
+            ts: Date.now(),
+            message: "Server returned 'click' with no target.",
+          });
           return;
         }
-        const point = imagePointToCssPoint(cmd.target, frame);
-        toExecute = { kind: 'click', point };
+        toExecute = { kind: 'click', point: imagePointToCssPoint(cmd.target, lastCapture.frame) };
       } else if (cmd.action === 'type') {
         toExecute = { kind: 'type', text: cmd.text ?? '' };
       } else if (cmd.action === 'scroll') {
         toExecute = { kind: 'scroll', scrollDirection: cmd.scroll_direction ?? 'down' };
       } else {
-        setAgentStatus({ ok: true, detail: `Done — ${cmd.reasoning}` });
-        return;
-      }
-
-      const execRes = await sendToContent(payload.tabId, {
-        type: 'EXECUTE_ACTION_REQUEST',
-        action: toExecute,
-      });
-      if (execRes?.type !== 'EXECUTE_ACTION_RESULT') {
-        setAgentStatus({
-          ok: false,
-          detail: 'Content script returned an unexpected execute-action response.',
+        pushMessage({
+          id: newId(),
+          role: 'assistant-agent',
+          ts: Date.now(),
+          reasoning: cmd.reasoning,
+          ok: true,
+          detail: 'Task marked complete.',
         });
         return;
       }
 
-      setAgentStatus({
+      const execRes = await sendToContent(lastCapture.payload.tabId, {
+        type: 'EXECUTE_ACTION_REQUEST',
+        action: toExecute,
+      });
+      if (execRes?.type !== 'EXECUTE_ACTION_RESULT') {
+        pushMessage({
+          id: newId(),
+          role: 'error',
+          ts: Date.now(),
+          message: 'Content script returned an unexpected execute-action response.',
+        });
+        return;
+      }
+
+      pushMessage({
+        id: newId(),
+        role: 'assistant-agent',
+        ts: Date.now(),
+        reasoning: cmd.reasoning,
         ok: execRes.ok,
-        detail: `${cmd.reasoning} — ${execRes.detail ?? ''}`,
+        detail: execRes.detail,
       });
     } catch (err) {
-      setAgentStatus({ ok: false, detail: err instanceof Error ? err.message : String(err) });
+      pushMessage({
+        id: newId(),
+        role: 'error',
+        ts: Date.now(),
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
-      setAgentBusy(false);
+      setSending(false);
     }
-  }, [payload, frame, task, sanitizedScreenshotDataUrl, manifest]);
+  }, [inputText, mode, lastCapture, sending, pushMessage]);
+
+  /** The composer has one primary button, not two — what it does depends on
+   *  the selected mode (Capture takes no text; Ask/Agent send the typed
+   *  message), mirroring the reference interaction pattern. */
+  const handlePrimaryAction = useCallback(() => {
+    if (mode === 'capture') {
+      capture();
+    } else {
+      sendMessage();
+    }
+  }, [mode, capture, sendMessage]);
+
+  const MODE_LABELS = { agent: 'Agent', ask: 'Ask', capture: 'Capture' } as const;
 
   return (
     <div className="app">
       <header className="header">
-        <p className="eyebrow">SIH 26171 · Phase 2</p>
-        <h1 className="title">Screen capture &amp; PII detection</h1>
-        <button className="capture-btn" onClick={capture} disabled={busy}>
-          {busy ? 'Capturing…' : 'Capture this page'}
-        </button>
+        <p className="eyebrow">SIH 26171</p>
+        <h1 className="title">PrivacyLens</h1>
       </header>
 
-      {payload && frame && <Readout frame={frame} payload={payload} />}
-
-      <div className="scroll">
-        {payload?.drift && <DriftNotice payload={payload} />}
-        {error && <ErrorNotice message={error.message} hint={error.hint} />}
-
-        {!payload && !error && (
+      <div className="chat-thread">
+        {messages.length === 0 && (
           <p className="empty">
-            Open any website, then choose <code>Capture this page</code>.
-            <br />
-            Boxes should sit exactly on their elements.
+            Click <code>Capture</code> below to sanitize the current page, then Ask a question
+            or give the Agent a task.
           </p>
         )}
 
-        {payload && (
-          <>
-            <div className="stage">
-              <img
-                ref={imgRef}
-                src={sanitizedScreenshotDataUrl ?? payload.screenshotDataUrl}
-                onLoad={onImageLoad}
-                alt="Captured page"
-              />
-              <div className="overlay">
-                {boxes.map((box) => (
-                  <div
-                    key={box.nodeId}
-                    className={[
-                      'box',
-                      box.isInteractive ? '' : 'static',
-                      selected === box.nodeId ? 'selected' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                    style={{
-                      left: `${box.left}px`,
-                      top: `${box.top}px`,
-                      width: `${box.width}px`,
-                      height: `${box.height}px`,
-                    }}
-                  >
-                    <span className="tick tl" />
-                    <span className="tick tr" />
-                    <span className="tick bl" />
-                    <span className="tick br" />
-                  </div>
-                ))}
+        {messages.map((msg) => {
+          switch (msg.role) {
+            case 'capture':
+              return <CaptureBubble key={msg.id} message={msg} />;
+            case 'user':
+              return (
+                <div key={msg.id} className="msg msg-user">
+                  <span className="msg-mode-badge">{msg.mode === 'agent' ? 'Agent' : 'Ask'}</span>
+                  <p>{msg.text}</p>
+                </div>
+              );
+            case 'assistant-ask':
+              return (
+                <div key={msg.id} className="msg msg-assistant">
+                  <p>{msg.answer}</p>
+                </div>
+              );
+            case 'assistant-agent':
+              return (
+                <div key={msg.id} className={`msg msg-assistant${msg.ok ? '' : ' msg-assistant-error'}`}>
+                  <p>{msg.reasoning}</p>
+                  {msg.detail && <p className="msg-detail">{msg.detail}</p>}
+                </div>
+              );
+            case 'error':
+              return (
+                <div key={msg.id} className="msg msg-error">
+                  <p>{msg.message}</p>
+                  {msg.hint && <p className="msg-hint">{msg.hint}</p>}
+                </div>
+              );
+            default:
+              return null;
+          }
+        })}
 
-                {showRedactionOverlay &&
-                  detectedDrawnBoxes.map((box, i) => {
-                    const color = PII_COLORS[box.piiType];
-                    return (
-                      <div
-                        key={`det-${i}`}
-                        className="box detected"
-                        title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} · ${box.source} · ${Math.round(box.confidence * 100)}%`}
-                        style={{
-                          left: `${box.left}px`,
-                          top: `${box.top}px`,
-                          width: `${box.width}px`,
-                          height: `${box.height}px`,
-                          borderColor: color,
-                          background: `${color}29`,
-                          color,
-                        }}
-                      >
-                        <span className="tick tl" />
-                        <span className="tick tr" />
-                        <span className="tick bl" />
-                        <span className="tick br" />
-                      </div>
-                    );
-                  })}
-              </div>
-            </div>
+        <div ref={threadEndRef} />
+      </div>
 
-            {detections.length > 0 && (
-              <button
-                type="button"
-                className="overlay-toggle"
-                onClick={() => setShowRedactionOverlay((v) => !v)}
-              >
-                {showRedactionOverlay ? 'Hide redacted regions' : 'Show redacted regions'}
-              </button>
-            )}
-
-            {presentTypes.length > 0 && showRedactionOverlay && (
-              <ul className="legend">
-                {presentTypes.map((type) => (
-                  <li key={type} className="legend-chip">
-                    <span
-                      className="legend-dot"
-                      style={{ background: PII_COLORS[type] }}
-                    />
-                    {type}
+      <div className="composer">
+        <div className="composer-row">
+          <div className="mode-select" ref={modeMenuRef}>
+            <button
+              type="button"
+              className="mode-select-trigger"
+              aria-haspopup="listbox"
+              aria-expanded={modeMenuOpen}
+              onClick={() => setModeMenuOpen((v) => !v)}
+            >
+              {MODE_LABELS[mode]}
+              <span className="mode-select-caret">▾</span>
+            </button>
+            {modeMenuOpen && (
+              <ul className="mode-menu" role="listbox" aria-label="Message mode">
+                {(['agent', 'ask', 'capture'] as const).map((m) => (
+                  <li key={m}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={mode === m}
+                      className={mode === m ? 'active' : ''}
+                      onClick={() => {
+                        setMode(m);
+                        setModeMenuOpen(false);
+                      }}
+                    >
+                      {MODE_LABELS[m]}
+                    </button>
                   </li>
                 ))}
               </ul>
             )}
+          </div>
+        </div>
 
-            {metrics && (
-              <p className="metrics">
-                {metrics.mergedCount} box{metrics.mergedCount === 1 ? '' : 'es'}
-                {' '}({metrics.faceCount} face · {metrics.domCount} dom · {metrics.nerCount} ner)
-                {' · '}face {metrics.faceMs}ms · dom {metrics.domMs}ms · ner {metrics.nerMs}ms
-                {' · '}{metrics.dupesCollapsed} deduped · {metrics.totalMs}ms total
-                {detectWarning ? ` — ${detectWarning}` : ''}
-              </p>
-            )}
+        <div className="composer-row">
+          <textarea
+            className="composer-input"
+            rows={2}
+            disabled={mode === 'capture'}
+            placeholder={
+              mode === 'agent'
+                ? 'e.g. Click the Submit button'
+                : mode === 'ask'
+                  ? 'e.g. What kind of form is this?'
+                  : 'Capture takes the current page as-is — no prompt needed'
+            }
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handlePrimaryAction();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="send-btn"
+            onClick={handlePrimaryAction}
+            disabled={
+              mode === 'capture' ? busy || sending : sending || !inputText.trim() || !lastCapture
+            }
+          >
+            {mode === 'capture' ? (busy ? 'Capturing…' : 'Capture') : sending ? '…' : 'Send'}
+          </button>
+        </div>
 
-            {manifest.regions.length > 0 && (
-              <p className="manifest-summary">
-                Manifest: {manifest.regions.length} region
-                {manifest.regions.length === 1 ? '' : 's'} (
-                {Object.entries(
-                  manifest.regions.reduce<Record<string, number>>((counts, r) => {
-                    counts[r.type] = (counts[r.type] ?? 0) + 1;
-                    return counts;
-                  }, {}),
-                )
-                  .map(([type, count]) => `${count} ${type}`)
-                  .join(' · ')}
-                ) — no matched text, ready for Phase 4
-              </p>
-            )}
-
-            <div className="agent-panel">
-              <label className="agent-label" htmlFor="agent-task">
-                Task for the agent
-              </label>
-              <textarea
-                id="agent-task"
-                className="agent-task"
-                rows={2}
-                placeholder="e.g. Click the Submit button"
-                value={task}
-                onChange={(e) => setTask(e.target.value)}
-              />
-              <button
-                type="button"
-                className="agent-run-btn"
-                onClick={runAgentStep}
-                disabled={agentBusy || !task.trim()}
-              >
-                {agentBusy ? 'Running one step…' : 'Run one agent step'}
-              </button>
-              {agentStatus && (
-                <p className={`agent-status ${agentStatus.ok ? 'ok' : 'error'}`}>
-                  {agentStatus.detail}
-                </p>
-              )}
-            </div>
-
-            <ElementList
-              elements={payload.snapshot.elements}
-              selected={selected}
-              onSelect={setSelected}
-              truncated={payload.snapshot.truncated}
-            />
-          </>
+        {mode !== 'capture' && !lastCapture && (
+          <p className="composer-hint">Capture the page first to ask a question or run a task.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One capture's full render: the sanitized image (click to zoom to full
+ * size in a new tab), the per-message redacted-regions toggle (Phase 3c —
+ * scoped to THIS capture, not global), and a collapsible Details section
+ * holding everything that used to be permanently visible (coordinate-scale
+ * readout, per-track timing metrics, manifest summary, element list).
+ *
+ * Owns its own displayScale/showOverlay/selected state — each capture bubble
+ * measures and toggles independently, since the chat can hold more than one.
+ */
+function CaptureBubble({ message }: { message: CaptureMessage }) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [displayScale, setDisplayScale] = useState(0);
+  const [showOverlay, setShowOverlay] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  /** The moment the coordinate contract is exercised. We read naturalWidth /
+   *  naturalHeight — the true bitmap size — NOT clientWidth, which is the
+   *  downscaled size the panel renders at. */
+  const onImageLoad = useCallback(() => {
+    const img = imgRef.current;
+    if (!img || !img.naturalWidth) return;
+    setDisplayScale(img.clientWidth / img.naturalWidth);
+  }, []);
+
+  /**
+   * Full-page captures render very small in the panel's narrow column (a
+   * tall page can be thousands of pixels tall, downscaled to fit ~380px
+   * wide) — opens the actual captured bitmap at full resolution in a new
+   * tab so it's inspectable. A Blob URL, not the data: URL directly:
+   * Chrome blocks top-level navigation to data: URLs as an anti-phishing
+   * measure; object URLs are not subject to that restriction.
+   */
+  const openFullSize = useCallback(async () => {
+    const dataUrl = message.sanitizedScreenshotDataUrl ?? message.payload.screenshotDataUrl;
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank');
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (err) {
+      console.error('[SIH] Failed to open full-size image', err);
+    }
+  }, [message]);
+
+  const boxes: DrawnBox[] = useMemo(() => {
+    if (displayScale === 0) return [];
+    return message.payload.snapshot.elements.flatMap((el) => {
+      // CSS px -> image px -> clip -> display px. Every conversion via coords.ts.
+      const imageBox = clampToImage(domRectToImageBox(el.rect, message.frame), message.frame);
+      if (!imageBox) return [];
+      const css = imageBoxToCssBox(imageBox, displayScale);
+      return [{ nodeId: el.nodeId, ...css, isInteractive: el.isInteractive }];
+    });
+  }, [message, displayScale]);
+
+  const detectedDrawnBoxes = useMemo(() => {
+    if (displayScale === 0) return [];
+    return message.detections.map((box) => ({
+      ...imageBoxToCssBox(box.imageBox, displayScale),
+      piiType: box.piiType,
+      subtype: box.subtype,
+      source: box.source,
+      confidence: box.confidence,
+    }));
+  }, [message.detections, displayScale]);
+
+  /** Only the types actually present this capture — an always-full 12-chip
+   *  legend would be noise on a page with two PII types on it. */
+  const presentTypes = useMemo(() => {
+    const seen = new Set<PiiType>();
+    for (const box of message.detections) seen.add(box.piiType);
+    return Array.from(seen);
+  }, [message.detections]);
+
+  return (
+    <div className="msg msg-capture">
+      {message.payload.drift && <DriftNotice payload={message.payload} />}
+
+      <div className="stage">
+        <img
+          ref={imgRef}
+          src={message.sanitizedScreenshotDataUrl ?? message.payload.screenshotDataUrl}
+          onLoad={onImageLoad}
+          onClick={openFullSize}
+          className="zoomable"
+          title="Click to open full-size in a new tab"
+          alt="Captured page"
+        />
+        <div className="overlay">
+          {boxes.map((box) => (
+            <div
+              key={box.nodeId}
+              className={[
+                'box',
+                box.isInteractive ? '' : 'static',
+                selected === box.nodeId ? 'selected' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              style={{
+                left: `${box.left}px`,
+                top: `${box.top}px`,
+                width: `${box.width}px`,
+                height: `${box.height}px`,
+              }}
+            >
+              <span className="tick tl" />
+              <span className="tick tr" />
+              <span className="tick bl" />
+              <span className="tick br" />
+            </div>
+          ))}
+
+          {showOverlay &&
+            detectedDrawnBoxes.map((box, i) => {
+              const color = PII_COLORS[box.piiType];
+              return (
+                <div
+                  key={`det-${i}`}
+                  className="box detected"
+                  title={`${box.piiType}${box.subtype ? ` · ${box.subtype}` : ''} · ${box.source} · ${Math.round(box.confidence * 100)}%`}
+                  style={{
+                    left: `${box.left}px`,
+                    top: `${box.top}px`,
+                    width: `${box.width}px`,
+                    height: `${box.height}px`,
+                    borderColor: color,
+                    background: `${color}29`,
+                    color,
+                  }}
+                >
+                  <span className="tick tl" />
+                  <span className="tick tr" />
+                  <span className="tick bl" />
+                  <span className="tick br" />
+                </div>
+              );
+            })}
+        </div>
+      </div>
+
+      {message.detections.length > 0 && (
+        <button
+          type="button"
+          className="overlay-toggle"
+          onClick={() => setShowOverlay((v) => !v)}
+        >
+          {showOverlay ? 'Hide redacted regions' : 'Show redacted regions'}
+        </button>
+      )}
+
+      {presentTypes.length > 0 && showOverlay && (
+        <ul className="legend">
+          {presentTypes.map((type) => (
+            <li key={type} className="legend-chip">
+              <span className="legend-dot" style={{ background: PII_COLORS[type] }} />
+              {type}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {message.manifest.regions.length > 0 && (
+        <p className="manifest-summary">
+          Manifest: {message.manifest.regions.length} region
+          {message.manifest.regions.length === 1 ? '' : 's'} (
+          {Object.entries(
+            message.manifest.regions.reduce<Record<string, number>>((counts, r) => {
+              counts[r.type] = (counts[r.type] ?? 0) + 1;
+              return counts;
+            }, {}),
+          )
+            .map(([type, count]) => `${count} ${type}`)
+            .join(' · ')}
+          ) — no matched text
+        </p>
+      )}
+
+      <details className="details">
+        <summary>Details</summary>
+        <Readout frame={message.frame} payload={message.payload} />
+        {message.metrics && (
+          <p className="metrics">
+            {message.metrics.mergedCount} box{message.metrics.mergedCount === 1 ? '' : 'es'}
+            {' '}({message.metrics.faceCount} face · {message.metrics.domCount} dom · {message.metrics.nerCount} ner)
+            {' · '}face {message.metrics.faceMs}ms · dom {message.metrics.domMs}ms · ner {message.metrics.nerMs}ms
+            {' · '}{message.metrics.dupesCollapsed} deduped · {message.metrics.totalMs}ms total
+            {message.detectWarning ? ` — ${message.detectWarning}` : ''}
+          </p>
+        )}
+        <ElementList
+          elements={message.payload.snapshot.elements}
+          selected={selected}
+          onSelect={setSelected}
+          truncated={message.payload.snapshot.truncated}
+        />
+      </details>
     </div>
   );
 }
@@ -758,15 +1042,6 @@ function DriftNotice({ payload }: { payload: CapturePayload }) {
             )}px horizontally. Boxes below are offset by that amount.`}{' '}
         Hold the page still and capture again.
       </p>
-    </div>
-  );
-}
-
-function ErrorNotice({ message, hint }: { message: string; hint?: string }) {
-  return (
-    <div className="notice">
-      <h3>{message}</h3>
-      {hint && <p>{hint}</p>}
     </div>
   );
 }
