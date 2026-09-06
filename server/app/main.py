@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .schemas import AskRequest, PlanActionRequest
 from . import vlm_client
 
-app = FastAPI(title="PrivacyLens action planner", version="0.1.0")
+app = FastAPI(title="Pixels action planner", version="0.1.0")
 
 # Phase 5: the extension's side panel (chrome-extension://<id>) calls this
 # server directly. <all_urls> in manifest.json's host_permissions already

@@ -1,4 +1,4 @@
-# PrivacyLens — action-planner / Q&A server (Phase 4)
+# Pixels — action-planner / Q&A server (Phase 4)
 
 FastAPI service that takes an **already-sanitized** screenshot (text masked
 by 3a, faces blurred by 3b) plus its redaction manifest (3c), and either:

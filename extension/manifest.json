@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "PrivacyLens — SIH 26171",
+  "name": "Pixels — SIH 26171",
   "version": "0.1.0",
   "description": "On-device visual perception for lightweight browser agents. Phase 1: capture and coordinate alignment.",
 
@@ -21,7 +21,7 @@
   },
 
   "action": {
-    "default_title": "Open PrivacyLens"
+    "default_title": "Open Pixels"
   },
 
   "web_accessible_resources": [

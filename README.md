@@ -1,4 +1,4 @@
-# PrivacyLens — SIH 26171
+# Pixels — SIH 26171
 
 **"On-device Visual Perception for Light-weight Browser Agents"** (ISRO/Dept.
 of Space, PS 26171). A Chrome extension that captures a page, redacts PII

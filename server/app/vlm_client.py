@@ -27,7 +27,7 @@ import httpx
 from .config import OPENROUTER_URL, get_api_key, get_model
 from .schemas import ActionCommand, AskRequest, PlanActionRequest, RedactionManifest
 
-SYSTEM_PROMPT = """You are a browser-automation planner for PrivacyLens.
+SYSTEM_PROMPT = """You are a browser-automation planner for Pixels.
 
 You receive a SANITIZED screenshot of a web page: some regions were masked \
 (solid black boxes) or blurred by an on-device privacy layer BEFORE this \
@@ -54,7 +54,7 @@ Rules:
 - Never target a masked or blurred region.
 """
 
-ASK_SYSTEM_PROMPT = """You are a helpful assistant answering questions about a web page for PrivacyLens.
+ASK_SYSTEM_PROMPT = """You are a helpful assistant answering questions about a web page for Pixels.
 
 You receive a SANITIZED screenshot of a web page: some regions were masked \
 (solid black boxes) or blurred by an on-device privacy layer BEFORE this \

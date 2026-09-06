@@ -657,7 +657,7 @@ export default function App() {
     <div className="app">
       <header className="header">
         <p className="eyebrow">SIH 26171</p>
-        <h1 className="title">PrivacyLens</h1>
+        <h1 className="title">Pixels</h1>
       </header>
 
       {/* Pinned above the chat, not interleaved in it: only the LATEST
