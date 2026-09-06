@@ -24,10 +24,12 @@ API_KEY_ENV = "OPENROUTER_API_KEY"
 MODEL_ENV = "VLM_MODEL"
 
 # Free as of this check (Sept 2026) — free-tier model availability on
-# OpenRouter rotates without notice; if this 404s, check openrouter.ai/models
-# for a current :free vision-capable listing and update this default (or set
-# VLM_MODEL yourself, which always wins).
-DEFAULT_MODEL = "google/gemma-4-31b-it:free"
+# OpenRouter rotates and rate-limits without notice (google/gemma-4-31b-it:free
+# hit a 429 "temporarily rate-limited upstream" during live testing, verified
+# against the real API, not a hypothetical). If this one also 429s/404s,
+# check openrouter.ai/models for a current :free vision-capable listing and
+# update this default (or set VLM_MODEL yourself, which always wins).
+DEFAULT_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -47,4 +49,11 @@ def get_api_key() -> str:
 
 
 def get_model() -> str:
-    return os.environ.get(MODEL_ENV, DEFAULT_MODEL)
+    # Deliberately `or DEFAULT_MODEL`, not `.get(MODEL_ENV, DEFAULT_MODEL)`:
+    # .env.example ships VLM_MODEL= (present, empty) so it's a visible,
+    # fillable line rather than an absent one — python-dotenv loads that as
+    # an actual empty string in the environment, which .get()'s default
+    # parameter does NOT cover (that only fires when the key is missing
+    # entirely). An empty model string reaches OpenRouter as "model": "",
+    # which is a 400, not a fallback — verified against the real API.
+    return os.environ.get(MODEL_ENV) or DEFAULT_MODEL

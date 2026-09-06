@@ -97,6 +97,17 @@ def parse_action(content: str) -> ActionCommand:
     return ActionCommand.model_validate(parsed)
 
 
+def check_response(response: httpx.Response) -> None:
+    """response.raise_for_status() alone discards the body — and OpenRouter,
+    like most APIs, puts the actually-useful reason for a 4xx/5xx there
+    (e.g. {"error": {"message": "..."}}), not in the terse status-line
+    summary httpx raises. Surface it instead of guessing."""
+    if response.is_error:
+        raise RuntimeError(
+            f"OpenRouter request failed ({response.status_code}): {response.text[:1000]}"
+        )
+
+
 async def plan_action(req: PlanActionRequest) -> ActionCommand:
     api_key = get_api_key()
     model = get_model()
@@ -108,7 +119,7 @@ async def plan_action(req: PlanActionRequest) -> ActionCommand:
             headers={"Authorization": f"Bearer {api_key}"},
             json=payload,
         )
-        response.raise_for_status()
+        check_response(response)
         data = response.json()
 
     content = data["choices"][0]["message"]["content"]

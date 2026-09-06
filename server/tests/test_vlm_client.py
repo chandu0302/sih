@@ -1,9 +1,10 @@
 import json
 
+import httpx
 import pytest
 
 from app.schemas import PlanActionRequest
-from app.vlm_client import build_payload, parse_action
+from app.vlm_client import build_payload, check_response, parse_action
 
 
 @pytest.fixture()
@@ -70,3 +71,22 @@ def test_parse_action_rejects_schema_violation():
     content = json.dumps({"action": "click", "reasoning": "clicking"})
     with pytest.raises(Exception):
         parse_action(content)
+
+
+def _fake_response(status_code: int, body: str) -> httpx.Response:
+    return httpx.Response(status_code, text=body, request=httpx.Request("POST", "https://example.test"))
+
+
+def test_check_response_passes_through_on_success():
+    check_response(_fake_response(200, '{"ok": true}'))  # must not raise
+
+
+def test_check_response_surfaces_the_body_on_error():
+    body = '{"error": {"message": "model does not support response_format"}}'
+    with pytest.raises(RuntimeError, match="does not support response_format"):
+        check_response(_fake_response(400, body))
+
+
+def test_check_response_includes_status_code():
+    with pytest.raises(RuntimeError, match="401"):
+        check_response(_fake_response(401, '{"error": "invalid key"}'))
