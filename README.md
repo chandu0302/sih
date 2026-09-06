@@ -1,23 +1,39 @@
-# SIH 26171 — On-device Visual Perception for Light-weight Browser Agents
+# PrivacyLens — SIH 26171
 
-Phase 1: capture and coordinate alignment.
+**"On-device Visual Perception for Light-weight Browser Agents"** (ISRO/Dept.
+of Space, PS 26171). A Chrome extension that captures a page, redacts PII
+**on-device** before anything leaves the browser, then lets a vision-language
+model answer questions about the sanitized page or execute one action on it.
 
-## What Phase 1 does
+**The thesis:** the VLM reasons over sanitized state; the client executes in
+real state. A detection miss cannot leak data that was never transmitted,
+because redaction happens *before* the image is ever sent anywhere.
 
-Click the extension icon → a side panel opens → **Capture** takes, at the same
-instant:
+## What it does
 
-1. a **screenshot** of the visible tab (PNG), and
-2. a **structured list of salient page elements**, each with a bounding rect,
+Open the side panel — it looks like a chat. Pick a mode from the dropdown at
+the bottom (defaults to **Capture**):
 
-then draws every element's box back onto the screenshot. If the boxes sit
-exactly on their elements, the coordinate contract is correct and Phases 2–5
-can be built on it.
+- **Capture** — takes the *entire scrollable page* (not just the viewport) as
+  one sanitized screenshot: text-shaped PII is masked on the live DOM
+  *before* the pixels are ever captured, and any detected face is blurred on
+  the captured bitmap afterward. The result is pinned above the chat.
+- **Ask** — a free-text question about the current capture ("What kind of
+  form is this?"), answered by a VLM that sees only the sanitized image plus
+  a manifest of what was redacted (type/location/confidence, never the
+  actual matched text).
+- **Agent** — a one-step task ("Click the Submit button"). The VLM plans one
+  action (click/type/scroll/done) against the sanitized image; the extension
+  converts its answer back to a real page coordinate and executes it.
 
-There is no ML, no server, and no redaction yet. Phase 1 exists to make the
-coordinate spine trustworthy, because every later stage inherits it.
+**Capture is optional, not a precondition** — switching to Ask or Agent and
+hitting Send with nothing captured yet auto-captures the page first, then
+proceeds. Manual Capture stays available whenever you want fresher context
+(e.g. after an Agent action changes the page).
 
 ## Setup
+
+### Extension
 
 ```bash
 cd extension
@@ -30,134 +46,155 @@ Then in Chrome:
 1. Go to `chrome://extensions`
 2. Enable **Developer mode** (top right)
 3. **Load unpacked** → select `extension/dist`
-4. Open any normal **http/https** website tab, click the extension icon, press **Capture**
+4. Open any normal **http/https** website tab, click the extension icon to
+   open the side panel
 
-Capture currently works on `http://` and `https://` pages only — see
-**Known gaps** below for why `file://` (including the bundled test page) needs
-an extra step, and **Troubleshooting** if Capture reports an access error.
+### Server (Ask / Agent modes)
+
+Ask and Agent both call a small FastAPI server that talks to a VLM. See
+[`server/README.md`](server/README.md) for full setup — short version:
+
+```bash
+cd server
+pip install -r requirements.txt
+cp .env.example .env   # paste a free key from openrouter.ai/keys
+uvicorn app.main:app --reload
+```
+
+Capture mode alone (no server needed) still fully demonstrates the on-device
+redaction pipeline.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `npm run build` | Build `dist/` (side panel, service worker, content script) |
-| `npm test` | Run the coordinate math test suite |
+| `npm test` | Run the extension test suite (Vitest) |
 | `npm run typecheck` | TypeScript, no emit |
-
-## Verifying the coordinate contract
-
-The acceptance test for Phase 1 is visual and must hold in all of these:
-
-- **DPR 1** — a standard display
-- **DPR 2** — a Retina display, or DevTools device emulation
-- **Browser zoom** at 80% / 125% / 150%
-- **A scrolled page** — boxes must not drift downward
-- **A page with a horizontal scrollbar**
-
-Watch the **Scale basis** and **Derived scale** readouts in the panel. If the
-derived scale disagrees with the reported DPR, that is expected — it is the
-whole reason we derive scale from the returned image rather than trusting
-`devicePixelRatio`.
+| `pytest` (in `server/`) | Run the server test suite |
 
 ## Architecture notes worth knowing
 
-**Permissions ended up broader than the original activeTab-only plan, and
-here's the honest reason why.** The manifest declares:
+**Full-page capture uses the Chrome DevTools Protocol, not
+`captureVisibleTab`.** `chrome.tabs.captureVisibleTab()` can only ever return
+the current viewport — a hard platform limit. The entire scrollable page, in
+one shot, uses the same mechanism DevTools' own "Capture full size
+screenshot" command does: `chrome.debugger.attach` →
+`Page.getLayoutMetrics` (the page's real CSS size — the sole source of truth
+for coordinate math downstream) → `Page.captureScreenshot` with
+`captureBeyondViewport: true` → `chrome.debugger.detach`. Because this never
+actually scrolls the page, `getBoundingClientRect()` stays valid as both
+viewport- and page-relative for the whole capture — no scroll-offset math
+was needed anywhere. See `src/background/service-worker.ts` and
+`src/lib/coords.ts`'s `createFullPageFrame`.
 
-```json
-"permissions": ["activeTab", "scripting", "sidePanel"],
-"host_permissions": ["http://*/*", "https://*/*"]
-```
+This is why the manifest declares the `"debugger"` permission — it shows a
+"this extension is debugging your browser" banner while attached (briefly,
+per capture) and fails if real DevTools is already attached to the same tab
+(only one debugger client allowed at a time — close DevTools and retry).
 
-> Note: your local manifest may instead have `"host_permissions": ["<all_urls>"]`
-> — that's fine too, it's the broader superset and works the same way. Either
-> form fixes the same underlying issue described below.
+**Redaction is two different mechanisms for two different reasons.** Text
+is masked *before* capture: three concurrent, independently fault-tolerant
+detection tracks (DOM/regex, on-device face model, on-device NER) find PII
+on the live page, then opaque `position: absolute` overlay divs cover it
+*before* the CDP screenshot fires — the pixels never contain the text.
+Faces can only be located in pixels, so they're blurred *after* capture,
+directly on the captured bitmap. See `src/redaction/mask-overlay.ts` and
+`src/redaction/face-blur.ts`.
 
-The original design used `activeTab` alone — granted on the toolbar-icon
-click, nothing at install, the tightest possible footprint. In practice this
-failed specifically **because of the side panel**: opening a side panel
-consumes the icon click, so `activeTab`'s grant doesn't reliably reach the tab
-by the time Capture runs. This is a known, reported Chromium behavior
-(`activeTab` behaves differently in a side panel than in a popup — see
-[chromium issue 40916430](https://issues.chromium.org/issues/40916430)), not
-something specific to this codebase. The documented workaround is a standing
-host permission, which is what's declared above.
+**Attribute-based fields are masked whether empty or filled.** A password
+field, a name field (`id`/`placeholder`/`autocomplete` hinting at a name), or
+an address field (state/city/pincode, including `<select>` dropdowns whose
+closed options aren't laid out on the page at all and so can never be boxed
+via text detection) are classified and masked by their *markup*, not their
+*content* — the only way to catch a field before or regardless of what gets
+typed into it. See `src/detection/dom-track.ts`'s `classifyElement`.
 
-Net effect: install-time permissions are still minimal (no `tabs`, so no
-"read your browsing history" warning), but the extension does ask for
-http/https access up front rather than purely on-demand. Revisit this in
-Phase 6 — Chrome's per-site access controls (user can scope it to specific
-sites post-install) partially recover the tighter story even with this
-manifest.
-
-*Consequence to plan for:* Phase 5's agent loop navigates across pages; the
-current host_permissions already cover that, so no further change needed
-there.
-
-**Capture order is the correctness story.** Read the DOM, capture pixels, then
-re-probe the viewport to detect whether the page moved in between. A drift
-warning is surfaced in the panel rather than silently producing boxes that
-describe a page state the screenshot never showed.
-
-**Scale is derived, not assumed.** `createCoordinateFrame()` tries both
-candidate viewport denominators (with and without the scrollbar) and keeps the
-one that yields an isotropic frame. Whether `captureVisibleTab` includes the
-scrollbar varies with overlay-scrollbar settings and Chrome version; guessing
-wrong is a silent ~15px horizontal error. See `src/lib/coords.ts`.
+**Scale is derived, not assumed.** `createFullPageFrame()` computes scale
+directly from CDP's reported page size vs. the actual captured image
+dimensions — no guessing between viewport-width candidates the way a
+`captureVisibleTab`-based design would need to. See `src/lib/coords.ts`'s
+module doc for the full reasoning (including why there's still no scroll
+term).
 
 **Active-tab resolution ignores DevTools/panel focus.** `getActiveTab()` in
 the service worker does *not* use `chrome.tabs.query({active, currentWindow})`
 — when the service-worker DevTools or the side panel itself has focus,
-`currentWindow` can resolve to *that* window instead of your browser tab,
-which silently captures the wrong thing (or a `chrome://` page). It resolves
-the last-focused **normal** browser window instead, with a fallback scan.
-See `src/background/service-worker.ts`.
+`currentWindow` can resolve to *that* window instead of your browser tab.
+It resolves the last-focused **normal** browser window instead, with a
+fallback scan. See `src/background/service-worker.ts`.
 
 **The build is hand-rolled on purpose.** MV3 needs three outputs with
 incompatible module formats (ES-module page, ES-module worker, IIFE content
-script). `build.mjs` runs three sequential Vite builds — about 40 lines, fully
-under our control, no plugin to break the week before the demo.
+script). `build.mjs` runs three sequential Vite builds — fully under our
+control, no plugin to break the week before the demo.
+
+**Constrained decoding on the server is prompt + validation, not grammar
+decoding.** OpenRouter proxies many providers whose support for
+`json_schema` mode is inconsistent; `/plan-action` uses
+`response_format: json_object` plus a strict system prompt plus post-hoc
+Pydantic validation instead. `/ask` uses no `response_format` at all — it's
+a free-text answer, not a structured action.
 
 ## Troubleshooting
 
-**"No access to this tab yet"** — you clicked Capture while a `chrome://`
-page, the extensions page, or DevTools had focus. Switch to a normal http/https
-tab, make sure no DevTools window is focused, and capture again.
+**"No access to this tab yet" / "This is a browser page and cannot be
+captured"** — Capture was triggered while a `chrome://` page, the extensions
+page, or DevTools had focus. Switch to a normal http/https tab and retry.
 
-**"This is a browser page and cannot be captured"** — same cause, cleaner
-message. Capture only works on real websites.
+**"Another debugger (often Chrome DevTools) is already attached to this
+tab"** — real DevTools is open on the same tab. Close it and capture again;
+Chrome only allows one debugger client per tab.
 
-**Capture fails only on the local test page** — expected. `file://` pages
-aren't covered by the `http://*/*` / `https://*/*` host permissions, so
-`test-page/index.html` won't load via `Capture` as-is. Two ways around it,
-neither requires broadening permissions:
-- Serve it instead of opening it: `npx serve test-page` and capture the
-  `http://localhost:...` URL it gives you.
-- Or just verify coordinate alignment on any real site (Wikipedia works well)
-  — the test page's real purpose is Phase 2's PII-precision fixture, not this
-  check.
+**A capture bubble never appears / the debugging banner seems stuck** — an
+unexpected mid-capture failure attempts a best-effort detach automatically
+(`CAPTURE_ABORT_REQUEST`); if it's still stuck, reload the extension from
+`chrome://extensions`.
 
-**Raw error text, if the friendly message isn't enough** — open the extension
-card at `chrome://extensions` → **"service worker"** under Inspect views →
-Console tab → Capture. The `[SIH] capture failed …` line there is the actual
-Chrome API error.
+**Ask/Agent returns an error mentioning "OPENROUTER_API_KEY"** — the server
+has no key configured; see `server/README.md`.
 
-## Known gaps (deliberate, revisited later)
+**Ask/Agent returns a rate-limit or capacity error from the model
+provider** — expected free-tier behavior, not a bug (free models rate-limit
+hard under load). Wait and retry, or set `VLM_MODEL` in `server/.env` to a
+different model.
 
-- **Occlusion is not modelled.** An element visually behind another is still
-  reported as visible. Matters for redaction in Phase 3.
-- **Selectors are best-effort.** Hardened in Phase 5, when actions depend on them.
-- **`file://` capture isn't wired up.** See Troubleshooting above — serve the
-  test page over http instead, or add `file:///*` host permission + file
-  access if you specifically need it later.
-- **Cross-origin iframes are not traversed.** Their contents are invisible to
-  the DOM track; the Phase 2 vision tracks are what will cover them.
-- **Chrome only.** Firefox's MV3 differs (no `chrome.sidePanel`, event pages
-  rather than true service workers). Ported in Phase 6.
+**Raw error text, if the friendly message isn't enough** — open the
+extension card at `chrome://extensions` → **"service worker"** under Inspect
+views → Console tab.
+
+## Known gaps (deliberate, not oversights)
+
+- **Arbitrary text typed into a field with no name/ID-hinting attribute**
+  (e.g. a generic "Notes" textarea) is not detected by any track — the
+  attribute-based fix only covers fields markup already hints are sensitive.
+  A deeper fix (scanning live input/textarea values through the NER model,
+  boxing the whole element) is a known, larger, deferred change.
+- **The Agent/Ask task/question text itself is sent to the cloud VLM
+  unfiltered** — if you type real PII directly into the prompt (not the
+  page), it bypasses the on-device redaction pipeline entirely. Worth a
+  separate decision if this becomes a real concern.
+- **One action per Agent turn, not a loop.** No automatic multi-step
+  execution (scroll-then-click-then-verify) — each Send plans and executes
+  exactly one step.
+- **A very tall full-page capture may be downscaled by the VLM's own vision
+  encoder**, hurting grounding accuracy on long pages — not something this
+  project's client-side code controls.
+- **Occlusion is not modelled** in the salient-element list (an element
+  behind a modal is still reported as visible).
+- **Cross-origin iframes are not traversed** — invisible to all three
+  detection tracks.
+- **Chrome only.** Firefox's MV3 differs (no `chrome.sidePanel`, no
+  `chrome.debugger` equivalent, event pages rather than true service
+  workers) — not ported.
+- **`nodeId` convergence** (`dom-track.ts` uses `d…` counters, the DOM
+  snapshot uses `n…`) and the duplicated DOM-walk filter between
+  `dom-track.ts`/`ner-track.ts` are known, deliberate, low-priority
+  consolidation items.
 
 ## Models
 
-- **`extension/public/models/yolov11n-face.onnx`** — face detection (Track 2).
+- **`extension/public/models/yolov11n-face.onnx`** — face detection.
   - Source: https://huggingface.co/AdamCodd/YOLOv11n-face-detection (`model.onnx`, fp32 — not `model_fp16.onnx`; the WASM fallback path needs fp32)
   - sha256: `2dfe14171f5b76a05f9bcf0dac7f94b7bff4416b1f29eff7c9ef5830f51c5719`
   - License: apache-2.0
@@ -165,11 +202,33 @@ Chrome API error.
   - Dataset: WIDERFACE
   - Confirmed by inspection (session.inputNames/outputNames/dims), not assumed: input `images` float32 `[1,3,640,640]` NCHW RGB; output `output0` float32 `[1,5,8400]` (`cx,cy,w,h,score` per anchor, score already sigmoid'd, no baked-in NMS).
 
-- **`extension/public/models/plingampally/meridianpii-hi-v2/`** — Hindi/English NER for PII (Track 3, 4a). Gitignored (~55MB, over GitHub's 50MB warning) — staged manually for now; download from the source below.
+- **`extension/public/models/plingampally/meridianpii-hi-v2/`** — Hindi/English NER for PII. Gitignored (~55MB, over GitHub's 50MB warning) — staged manually for now; download from the source below.
   - Source: https://huggingface.co/plingampally/meridianpii-hi-v2 (`config.json`, `tokenizer.json`, `tokenizer_config.json`, `special_tokens_map.json`, `onnx/model_quantized.onnx` — INT8, dtype `q8`; skip `.safetensors`/full-precision `model.onnx`/any PyTorch `.bin`)
   - sha256 (`onnx/model_quantized.onnx`): `0a60415537461aed8e7380da01d051f23e962a1c540129a94ba4f3925e26be56`
   - License: **CC BY 4.0** — attribution required on redistribution.
   - Base model: MiniLM (Apache-2.0). Derived from Rampart (CC BY 4.0).
-  - 17-label BIO token-classification (`BertForTokenClassification`): `GIVEN_NAME, SURNAME, EMAIL, PHONE, URL, TAX_ID, BANK_ACCOUNT, ROUTING_NUMBER, GOVERNMENT_ID, PASSPORT, DRIVERS_LICENSE, BUILDING_NUMBER, STREET_NAME, SECONDARY_ADDRESS, CITY, STATE, ZIP_CODE`. Loaded via `@huggingface/transformers`' `pipeline('token-classification', ..., { dtype: 'q8' })`, confidence floor `0.15` (INT8 flattens scores — Track 2's 0.4 would drop real hits), text NFC-normalized only (NFKD strips Devanagari matras).
+  - 17-label BIO token-classification (`BertForTokenClassification`): `GIVEN_NAME, SURNAME, EMAIL, PHONE, URL, TAX_ID, BANK_ACCOUNT, ROUTING_NUMBER, GOVERNMENT_ID, PASSPORT, DRIVERS_LICENSE, BUILDING_NUMBER, STREET_NAME, SECONDARY_ADDRESS, CITY, STATE, ZIP_CODE` — all 17 map to a redacted PiiType (no keep-set). Loaded via `@huggingface/transformers`' `pipeline('token-classification', ..., { dtype: 'q8' })`, confidence floor `0.15` (INT8 flattens scores — a 0.4 floor would drop real hits), text NFC-normalized only (NFKD strips Devanagari matras).
+  - **Fixed bug, worth knowing if you re-stage this model:** the bundled `tokenizer_config.json` ships `model_max_length` as the HF-default "unbounded" sentinel instead of this model's real 512-token limit, silently defeating `transformers.js`'s own truncation and crashing on any page whose assembled text exceeds 512 tokens. Patched at pipeline-load time in `ner-detector.ts` (`fixTokenizerMaxLength`), not in the model asset itself, so it survives re-staging.
+
+- **VLM (Ask/Agent modes)** — server-side, configurable, not bundled with the extension. See `server/README.md` for current default/setup.
 
 ## Layout
+
+```
+sih/
+├── extension/
+│   ├── build.mjs, manifest.json, vitest.config.ts
+│   ├── public/ (models/, ort/, ort-tfjs/ — gitignored except the committed face model)
+│   └── src/
+│       ├── types.ts               ← shared contract across all contexts
+│       ├── lib/ (coords.ts, messaging.ts)
+│       ├── background/service-worker.ts   ← capture coordinator, CDP
+│       ├── content/ (index.ts, snapshot.ts)
+│       ├── sidepanel/ (App.tsx — chat UI, styles.css)
+│       ├── detection/  (Track 1 DOM/regex, Track 2 face, Track 3 NER, box-merger)
+│       ├── redaction/  (mask-overlay.ts, face-blur.ts, manifest.ts)
+│       ├── agent/      (server-client.ts, action-executor.ts — Phase 5)
+│       └── models/     (onnx-loader, webgpu, cache, model-registry)
+├── server/  (FastAPI action-planner/Q&A — see server/README.md)
+└── test-page/index.html   (coordinate + PII-precision fixture)
+```
