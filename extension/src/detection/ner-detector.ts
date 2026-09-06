@@ -118,6 +118,7 @@ async function createPipeline(): Promise<TokenClassificationPipeline> {
       device: 'webgpu',
     });
     console.log('[SIH] NER backend: webgpu');
+    fixTokenizerMaxLength(pipe);
     return pipe as unknown as TokenClassificationPipeline;
   } catch (err) {
     console.warn('[SIH] NER webgpu pipeline failed; retrying on wasm', err);
@@ -126,8 +127,51 @@ async function createPipeline(): Promise<TokenClassificationPipeline> {
       device: 'wasm',
     });
     console.log('[SIH] NER backend: wasm');
+    fixTokenizerMaxLength(pipe);
     return pipe as unknown as TokenClassificationPipeline;
   }
+}
+
+/** The tokenizer's own getter reads this if the config didn't ship one. */
+const FALLBACK_MAX_LENGTH = 512;
+
+/**
+ * VERIFIED BUG in the bundled model assets: tokenizer_config.json ships
+ * `model_max_length: 1e30` (the HF-default "unbounded" sentinel — an
+ * artifact of the model conversion, not a code bug), while config.json's
+ * `max_position_embeddings` is the model's real limit (512, for this MiniLM
+ * base). `tokenizer.model_max_length` is a GETTER with no public setter
+ * (see transformers.js's tokenization_utils.js) that reads straight from
+ * that broken config value.
+ *
+ * Why this matters: TokenClassificationPipeline._call() always tokenizes
+ * with `{ padding: true, truncation: true }` and no explicit `max_length`,
+ * so `truncation: true` silently does nothing — the pipeline call has no
+ * way to override it. A page whose assembled visible text exceeds 512 real
+ * tokens (easily reached by a form with a dozen-plus fields) is NOT
+ * truncated; it crashes the whole NER track with an ONNX Runtime broadcast
+ * error on the position-embedding Add node, taking down Track 3 entirely
+ * instead of degrading to "processed the first 512 tokens."
+ *
+ * Model assets are gitignored + staged (see ARCHITECTURE.md) — editing the
+ * JSON file on disk would not survive a re-stage, so the fix lives here
+ * instead, applied once per pipeline load, reading the model's own
+ * max_position_embeddings so it self-corrects if the model is ever swapped.
+ */
+export function fixTokenizerMaxLength(pipe: unknown): void {
+  const p = pipe as {
+    tokenizer?: { _tokenizerConfig?: Record<string, unknown> };
+    model?: { config?: { max_position_embeddings?: number } };
+  };
+
+  const tokenizerConfig = p.tokenizer?._tokenizerConfig;
+  if (!tokenizerConfig) {
+    console.warn('[SIH] Could not access tokenizer config to cap model_max_length.');
+    return;
+  }
+
+  const maxPositions = p.model?.config?.max_position_embeddings ?? FALLBACK_MAX_LENGTH;
+  tokenizerConfig.model_max_length = maxPositions;
 }
 
 /**

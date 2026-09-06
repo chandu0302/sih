@@ -211,8 +211,20 @@ export interface DriftReport {
 /* Message protocol                                                    */
 /* ------------------------------------------------------------------ */
 
-/** Side panel -> service worker. */
-export type PanelRequest = { type: 'CAPTURE_REQUEST' };
+/**
+ * Side panel -> service worker.
+ *
+ * Phase 3a split what was one CAPTURE_REQUEST into two round trips, because
+ * text redaction must happen BEFORE the pixels are captured, and computing
+ * "what to redact" requires the NER model, which only runs in the panel.
+ * The service worker cannot drive that itself, so the panel now owns the
+ * sequencing: snapshot -> (panel runs detection + masks the DOM) -> capture.
+ * See App.tsx's capture() for the full sequence and mask-overlay.ts for the
+ * masking step in between.
+ */
+export type PanelRequest =
+  | { type: 'CAPTURE_SNAPSHOT_REQUEST' }
+  | { type: 'CAPTURE_SCREENSHOT_REQUEST'; tabId: number; windowId: number };
 
 /**
  * Service worker -> content script.
@@ -229,13 +241,21 @@ export type PanelRequest = { type: 'CAPTURE_REQUEST' };
  * message pair rather than piggybacked onto NER_TEXT_REQUEST, so the three
  * tracks stay independent: any one of them failing must not block the
  * other two (see App.tsx's detection effect).
+ *
+ * Phase 3a: APPLY_MASK_REQUEST/REMOVE_MASK_REQUEST are also panel -> content
+ * script, sent by the panel after it has merged DOM_PII_REQUEST +
+ * NER_BOX_REQUEST results computed under the pre-capture IDENTITY frame
+ * (see App.tsx) — those DetectedBox.imageBox values are therefore already
+ * viewport CSS-pixel rects, reused as-is, no new coordinate math.
  */
 export type ContentRequest =
   | { type: 'SNAPSHOT_REQUEST' }
   | { type: 'VIEWPORT_PROBE' }
   | { type: 'NER_TEXT_REQUEST' }
   | { type: 'NER_BOX_REQUEST'; spans: NerSpan[]; frame: CoordinateFrame }
-  | { type: 'DOM_PII_REQUEST'; frame: CoordinateFrame };
+  | { type: 'DOM_PII_REQUEST'; frame: CoordinateFrame }
+  | { type: 'APPLY_MASK_REQUEST'; boxes: DetectedBox[] }
+  | { type: 'REMOVE_MASK_REQUEST' };
 
 /** Content script -> its caller (service worker for the first two, panel for the rest). */
 export type ContentResponse =
@@ -245,10 +265,18 @@ export type ContentResponse =
    *  the model reads, NOT what NER_BOX_REQUEST searches against. */
   | { type: 'NER_TEXT_RESULT'; nerText: string }
   | { type: 'NER_BOX_RESULT'; boxes: DetectedBox[] }
-  | { type: 'DOM_PII_RESULT'; boxes: DetectedBox[] };
+  | { type: 'DOM_PII_RESULT'; boxes: DetectedBox[] }
+  | { type: 'APPLY_MASK_RESULT'; maskedCount: number }
+  | { type: 'REMOVE_MASK_RESULT'; removedCount: number };
 
-/** Service worker -> side panel. Errors are values, not exceptions, because
- *  they cross a message boundary that does not preserve stack traces. */
-export type CaptureResponse =
-  | { ok: true; payload: CapturePayload }
+/** Service worker -> side panel, phase 1 (DOM read only — no pixels yet). */
+export type SnapshotCaptureResponse =
+  | { ok: true; tabId: number; windowId: number; snapshot: DomSnapshot; injectMs: number; snapshotMs: number }
+  | { ok: false; error: string; hint?: string };
+
+/** Service worker -> side panel, phase 2 (pixels, after the panel has masked
+ *  the DOM). Unmasking happens inside this call, immediately after the
+ *  pixels are captured — see service-worker.ts's captureScreenshot(). */
+export type ScreenshotCaptureResponse =
+  | { ok: true; screenshotDataUrl: string; screenshotMs: number }
   | { ok: false; error: string; hint?: string };

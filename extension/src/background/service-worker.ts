@@ -21,8 +21,7 @@
  */
 
 import { MessagingError, NO_RECEIVER, sendToContent } from '../lib/messaging';
-import { detectDrift } from '../lib/coords';
-import type { CapturePayload, CaptureResponse, DomSnapshot, ViewportContext } from '../types';
+import type { ScreenshotCaptureResponse, SnapshotCaptureResponse } from '../types';
 
 /** Clicking the toolbar icon opens the side panel. Page access is granted
  *  separately, by the Capture button requesting the optional host permission
@@ -36,72 +35,90 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // Only handle panel requests here; content-script replies are routed by
   // their own sendResponse channel and must not be intercepted.
-  if (message?.type !== 'CAPTURE_REQUEST') return false;
+  if (message?.type === 'CAPTURE_SNAPSHOT_REQUEST') {
+    runSnapshot()
+      .then((result) => sendResponse({ ok: true, ...result } satisfies SnapshotCaptureResponse))
+      .catch((err: unknown) => {
+        const { error, hint } = describeError(err);
+        console.error('[SIH] snapshot failed', err);
+        sendResponse({ ok: false, error, hint } satisfies SnapshotCaptureResponse);
+      });
+    return true; // async response
+  }
 
-  runCapture()
-    .then((payload) => sendResponse({ ok: true, payload } satisfies CaptureResponse))
-    .catch((err: unknown) => {
-      const { error, hint } = describeError(err);
-      console.error('[SIH] capture failed', err);
-      sendResponse({ ok: false, error, hint } satisfies CaptureResponse);
-    });
+  if (message?.type === 'CAPTURE_SCREENSHOT_REQUEST') {
+    runScreenshot(message.tabId, message.windowId)
+      .then((result) => sendResponse({ ok: true, ...result } satisfies ScreenshotCaptureResponse))
+      .catch((err: unknown) => {
+        const { error, hint } = describeError(err);
+        console.error('[SIH] screenshot failed', err);
+        sendResponse({ ok: false, error, hint } satisfies ScreenshotCaptureResponse);
+      });
+    return true; // async response
+  }
 
-  return true; // async response
+  return false;
 });
 
-async function runCapture(): Promise<CapturePayload> {
-  const totalStart = performance.now();
-
+/**
+ * Phase 1 of capture: inject + read the DOM. Nothing about pixels here —
+ * Phase 3a's redact-before-capture design means the panel must see this
+ * snapshot, run detection, and mask the live DOM BEFORE anything asks for a
+ * screenshot. See App.tsx's capture() for the full sequence.
+ */
+async function runSnapshot(): Promise<Omit<Extract<SnapshotCaptureResponse, { ok: true }>, 'ok'>> {
   const tab = await getActiveTab();
   if (!tab.id) throw new Error('Active tab has no id.');
   assertCapturable(tab.url ?? '');
 
-  // --- 1. inject -------------------------------------------------------
   const injectStart = performance.now();
   await ensureContentScript(tab.id);
   const injectMs = since(injectStart);
 
-  // --- 2. DOM read -----------------------------------------------------
   const snapshotStart = performance.now();
   const snapshotResponse = await sendToContent(tab.id, { type: 'SNAPSHOT_REQUEST' });
   if (snapshotResponse?.type !== 'SNAPSHOT_RESULT') {
     throw new Error('Content script returned an unexpected snapshot response.');
   }
-  const snapshot: DomSnapshot = snapshotResponse.snapshot;
   const snapshotMs = since(snapshotStart);
 
-  // --- 3. pixels -------------------------------------------------------
-  // Nothing awaited between the DOM read and this call, by design.
+  return {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    snapshot: snapshotResponse.snapshot,
+    injectMs,
+    snapshotMs,
+  };
+}
+
+/**
+ * Phase 2 of capture: pixels, then immediately unmask. `tabId`/`windowId`
+ * come from the panel's Phase 1 response rather than re-resolving the active
+ * tab — the tab we just masked is the one we must capture, regardless of
+ * what has focus by the time the panel finishes its detection + masking
+ * round trip (which now includes NER inference, on the order of hundreds of
+ * ms — long enough that "the active tab" is no longer a safe re-query).
+ */
+async function runScreenshot(
+  tabId: number,
+  windowId: number,
+): Promise<Omit<Extract<ScreenshotCaptureResponse, { ok: true }>, 'ok'>> {
   const screenshotStart = performance.now();
-  const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: 'png',
-  });
+  const screenshotDataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
   const screenshotMs = since(screenshotStart);
 
-  // --- 4. drift check --------------------------------------------------
-  let drift = null;
+  // Unmask immediately — nothing awaited between the capture above and this
+  // call except the call itself, mirroring the old snapshot/screenshot
+  // adjacency rule. A failed unmask leaves overlays visible on the live page
+  // (a UX annoyance, reload fixes it) but is not a capture failure: the
+  // pixels we needed are already safely in screenshotDataUrl.
   try {
-    const probe = await sendToContent(tab.id, { type: 'VIEWPORT_PROBE' });
-    if (probe?.type === 'VIEWPORT_RESULT') {
-      drift = detectDrift(snapshot.viewport, probe.viewport as ViewportContext);
-    }
-  } catch {
-    // A failed probe is a diagnostic loss, not a capture failure.
-    console.warn('[SIH] viewport probe failed; drift unknown');
+    await sendToContent(tabId, { type: 'REMOVE_MASK_REQUEST' });
+  } catch (err) {
+    console.warn('[SIH] unmask failed; overlays may remain visible on the page', err);
   }
 
-  return {
-    screenshotDataUrl,
-    snapshot,
-    drift,
-    tabId: tab.id,
-    timings: {
-      injectMs,
-      snapshotMs,
-      screenshotMs,
-      totalMs: since(totalStart),
-    },
-  };
+  return { screenshotDataUrl, screenshotMs };
 }
 
 /* ------------------------------------------------------------------ */

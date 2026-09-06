@@ -12,7 +12,11 @@
 
 import { defineConfig } from 'vitest/config';
 
-const DOM_TESTS = ['src/detection/dom-track.test.ts', 'src/detection/ner-track.test.ts'];
+const DOM_TESTS = [
+  'src/detection/dom-track.test.ts',
+  'src/detection/ner-track.test.ts',
+  'src/redaction/mask-overlay.test.ts',
+];
 
 export default defineConfig({
   test: {

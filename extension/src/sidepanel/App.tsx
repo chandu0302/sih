@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   clampToImage,
   createCoordinateFrame,
+  detectDrift,
   domRectToImageBox,
   imageBoxToCssBox,
   type CoordinateFrame,
@@ -27,12 +28,14 @@ import {
 import { classifyText, warmNerModel } from '../detection/ner-detector';
 import { detectFaces, warmFaceModel } from '../detection/face-detector';
 import { mergeDetections } from '../detection/box-merger';
+import { blurFaces } from '../redaction/face-blur';
 import { sendToContent } from '../lib/messaging';
 import type {
   CapturePayload,
-  CaptureResponse,
   DetectedBox,
   PiiType,
+  ScreenshotCaptureResponse,
+  SnapshotCaptureResponse,
   SnapshotElement,
 } from '../types';
 
@@ -95,6 +98,13 @@ export default function App() {
   const [detections, setDetections] = useState<DetectedBox[]>([]);
   const [detectWarning, setDetectWarning] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<DetectionMetrics | null>(null);
+  /** Phase 3b: payload.screenshotDataUrl is already text-masked (Phase 3a
+   *  happens before capture); this is that bitmap with detected faces
+   *  additionally blurred. Null until the face track's blur pass finishes
+   *  (or immediately, if no faces were found — see the detection effect). */
+  const [sanitizedScreenshotDataUrl, setSanitizedScreenshotDataUrl] = useState<string | null>(
+    null,
+  );
   /** Which payload the detection pass has already run for — a ref, not
    *  state, because it must not itself trigger a re-run when it changes. */
   const detectRanFor = useRef<CapturePayload | null>(null);
@@ -104,7 +114,25 @@ export default function App() {
     warmNerModel().catch((err) => console.error('[SIH] NER warm-up failed', err));
   }, []);
 
-      const capture = useCallback(async () => {
+  /**
+   * Phase 3a's redact-before-capture design forces this into two
+   * service-worker round trips with a masking phase in between, replacing
+   * what was one CAPTURE_REQUEST:
+   *
+   *   1. CAPTURE_SNAPSHOT_REQUEST — DOM read only, no pixels yet.
+   *   2. Detect text PII under a throwaway IDENTITY frame (scale 1, built
+   *      straight from the viewport — no image exists yet to derive a real
+   *      scale from) and mask it on the live page via APPLY_MASK_REQUEST.
+   *   3. CAPTURE_SCREENSHOT_REQUEST — pixels, now that text PII is masked.
+   *      The service worker unmasks immediately after, inside that call.
+   *
+   * A pre-mask detection failure does not abort the capture — it degrades to
+   * "nothing masked" (see the per-step try/catch below), same fault-
+   * tolerance posture as the post-capture detection effect. That degraded
+   * state is surfaced via detectWarning, not swallowed: an unmasked capture
+   * is the one failure mode this project cannot be silent about.
+   */
+  const capture = useCallback(async () => {
     setBusy(true);
     setError(null);
     setSelected(null);
@@ -112,20 +140,111 @@ export default function App() {
     setDetections([]);
     setDetectWarning(null);
     setMetrics(null);
+    setSanitizedScreenshotDataUrl(null);
     detectRanFor.current = null;
 
-    try {
-      const res = (await chrome.runtime.sendMessage({
-        type: 'CAPTURE_REQUEST',
-      })) as CaptureResponse;
+    const totalStart = performance.now();
 
-      if (!res) throw new Error('No response from the extension worker.');
-      if (!res.ok) {
-        setError({ message: res.error, hint: res.hint });
+    try {
+      // --- Phase 1: DOM snapshot only ---------------------------------
+      const snapRes = (await chrome.runtime.sendMessage({
+        type: 'CAPTURE_SNAPSHOT_REQUEST',
+      })) as SnapshotCaptureResponse;
+
+      if (!snapRes) throw new Error('No response from the extension worker.');
+      if (!snapRes.ok) {
+        setError({ message: snapRes.error, hint: snapRes.hint });
         setPayload(null);
         return;
       }
-      setPayload(res.payload);
+      const { tabId, windowId, snapshot, injectMs, snapshotMs } = snapRes;
+
+      // --- Phase 2: detect text PII (identity frame) and mask it ------
+      const identityFrame = createCoordinateFrame(
+        snapshot.viewport,
+        snapshot.viewport.clientWidth,
+        snapshot.viewport.clientHeight,
+      );
+
+      const preMaskWarnings: string[] = [];
+      let domMaskBoxes: DetectedBox[] = [];
+      let nerMaskBoxes: DetectedBox[] = [];
+
+      try {
+        const res = await sendToContent(tabId, { type: 'DOM_PII_REQUEST', frame: identityFrame });
+        if (res?.type === 'DOM_PII_RESULT') domMaskBoxes = res.boxes;
+      } catch (err) {
+        console.error('[SIH] Pre-capture DOM PII detection failed', err);
+        preMaskWarnings.push(`pre-mask dom: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      try {
+        const textRes = await sendToContent(tabId, { type: 'NER_TEXT_REQUEST' });
+        if (textRes?.type === 'NER_TEXT_RESULT') {
+          const spans = await classifyText(textRes.nerText);
+          const boxRes = await sendToContent(tabId, {
+            type: 'NER_BOX_REQUEST',
+            spans,
+            frame: identityFrame,
+          });
+          if (boxRes?.type === 'NER_BOX_RESULT') nerMaskBoxes = boxRes.boxes;
+        }
+      } catch (err) {
+        console.error('[SIH] Pre-capture NER detection failed', err);
+        preMaskWarnings.push(`pre-mask ner: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      const maskBoxes = mergeDetections([...domMaskBoxes, ...nerMaskBoxes]);
+
+      try {
+        await sendToContent(tabId, { type: 'APPLY_MASK_REQUEST', boxes: maskBoxes });
+      } catch (err) {
+        console.error('[SIH] Applying text mask failed', err);
+        preMaskWarnings.push(`mask-apply: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      if (preMaskWarnings.length > 0) {
+        setDetectWarning(preMaskWarnings.join('; '));
+      }
+
+      // --- Phase 3: pixels, now that text PII is masked ---------------
+      const shotRes = (await chrome.runtime.sendMessage({
+        type: 'CAPTURE_SCREENSHOT_REQUEST',
+        tabId,
+        windowId,
+      })) as ScreenshotCaptureResponse;
+
+      if (!shotRes) throw new Error('No response from the extension worker.');
+      if (!shotRes.ok) {
+        setError({ message: shotRes.error, hint: shotRes.hint });
+        setPayload(null);
+        return;
+      }
+
+      // --- Phase 4: drift check, computed here instead of the service
+      // worker now that the panel owns the sequencing. --------------
+      let drift = null;
+      try {
+        const probe = await sendToContent(tabId, { type: 'VIEWPORT_PROBE' });
+        if (probe?.type === 'VIEWPORT_RESULT') {
+          drift = detectDrift(snapshot.viewport, probe.viewport);
+        }
+      } catch {
+        console.warn('[SIH] viewport probe failed; drift unknown');
+      }
+
+      setPayload({
+        screenshotDataUrl: shotRes.screenshotDataUrl,
+        snapshot,
+        drift,
+        tabId,
+        timings: {
+          injectMs,
+          snapshotMs,
+          screenshotMs: shotRes.screenshotMs,
+          totalMs: performance.now() - totalStart,
+        },
+      });
     } catch (err) {
       setError({
         message: err instanceof Error ? err.message : String(err),
@@ -208,6 +327,8 @@ export default function App() {
       let faceMs = 0;
       let domMs = 0;
       let nerMs = 0;
+      /** Phase 3b: set only if faces were found and blurring succeeded. */
+      let blurredDataUrl: string | null = null;
       const warnings: string[] = [];
 
       const faceTrack = (async () => {
@@ -216,6 +337,17 @@ export default function App() {
           const blob = await (await fetch(payload.screenshotDataUrl)).blob();
           const image = await createImageBitmap(blob);
           faceBoxes = await detectFaces(image, frame);
+
+          if (faceBoxes.length > 0) {
+            try {
+              blurredDataUrl = await blurFaces(image, faceBoxes);
+            } catch (blurErr) {
+              console.error('[SIH] Face blur failed', blurErr);
+              warnings.push(
+                `face-blur: ${blurErr instanceof Error ? blurErr.message : String(blurErr)}`,
+              );
+            }
+          }
         } catch (err) {
           console.error('[SIH] Face detection failed', err);
           warnings.push(`face: ${err instanceof Error ? err.message : String(err)}`);
@@ -272,7 +404,15 @@ export default function App() {
       const merged = mergeDetections(raw);
 
       setDetections(merged);
-      setDetectWarning(warnings.length > 0 ? warnings.join('; ') : null);
+      setSanitizedScreenshotDataUrl(blurredDataUrl);
+      // Pre-mask warnings from capture() are not overwritten with an empty
+      // string when this post-capture pass finds nothing wrong of its own —
+      // an unmasked-text warning matters even if faces/dom/ner all succeed.
+      setDetectWarning((prev) => {
+        const combined = warnings.length > 0 ? warnings.join('; ') : null;
+        if (!combined) return prev;
+        return prev ? `${prev}; ${combined}` : combined;
+      });
       setMetrics({
         faceMs: Math.round(faceMs),
         domMs: Math.round(domMs),
@@ -339,7 +479,7 @@ export default function App() {
             <div className="stage">
               <img
                 ref={imgRef}
-                src={payload.screenshotDataUrl}
+                src={sanitizedScreenshotDataUrl ?? payload.screenshotDataUrl}
                 onLoad={onImageLoad}
                 alt="Captured page"
               />

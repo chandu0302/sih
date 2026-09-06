@@ -139,6 +139,15 @@
     <button class="offscreen">positioned off-screen</button>
   </div>
 
+  <h2>Face (Track 2 blocker #1 — real face image)</h2>
+  <p class="sub">
+    Official NASA/Commercial Crew portrait of astronaut Sunita Williams
+    (public domain — US government work). Used solely to verify YOLOv11n-face
+    boxes a real frontal face; capture this page and confirm a nonzero FACE
+    count in the metrics line before implementing 3b.
+  </p>
+  <img src="face-sample.jpg" alt="Test portrait for face detection" width="240" />
+
   <h2>Text blocks</h2>
   <table>
     <tr><th>Field</th><th>Value</th></tr>
@@ -152,6 +161,23 @@
     <tr><td>Aadhaar</td><td>2341 2341 2346</td></tr>
     <tr><td>Phone</td><td>+91 9876543210</td></tr>
     <tr><td>Email</td><td>priya.sharma@example.com</td></tr>
+  </table>
+
+  <h2>Blocker #5 — NER precision probe</h2>
+  <p class="sub">
+    Decoys first (should produce ZERO NER boxes at the 0.15 floor), then
+    genuine PII across scripts (should all be detected). Hover a box in the
+    panel to read its type/subtype/confidence tooltip.
+  </p>
+  <table>
+    <tr><th>Kind</th><th>Text</th></tr>
+    <tr><td>Decoy — org/proper nouns</td><td>The Indian Space Research Organisation announced a new Mission Control Software update for the Chandrayaan program on Tuesday.</td></tr>
+    <tr><td>Decoy — code-shaped, not an ID</td><td>Model: XJ-4471-B, Batch: QA-2026-09</td></tr>
+    <tr><td>Decoy — ordinary place name</td><td>The workshop will be held in Bengaluru next month.</td></tr>
+    <tr><td>Decoy — number, not a phone/ID</td><td>The satellite completed 14285 orbits before decommissioning.</td></tr>
+    <tr><td>Genuine — Hinglish name+phone</td><td>Rahul Verma ka number hai 9123456780, kal call karna.</td></tr>
+    <tr><td>Genuine — Devanagari name+address</td><td>प्रिया शर्मा, 12 महात्मा गांधी रोड, पुणे</td></tr>
+    <tr><td>Genuine — Indian-English name</td><td>Please contact Anjali Nair regarding the pending application.</td></tr>
   </table>
 
   <ul>

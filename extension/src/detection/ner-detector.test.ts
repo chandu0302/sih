@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { filterEntities, mapNerLabel } from './ner-detector';
+import { filterEntities, fixTokenizerMaxLength, mapNerLabel } from './ner-detector';
 
 describe('mapNerLabel', () => {
   it('maps GIVEN_NAME and SURNAME to NAME', () => {
@@ -133,5 +133,39 @@ describe('filterEntities', () => {
       { entity_group: 'GIVEN_NAME', score: 0.478, word: 'प्रिया' },
     ];
     expect(filterEntities(entities)).toHaveLength(2);
+  });
+});
+
+describe('fixTokenizerMaxLength', () => {
+  // Verified bug (blocker #5 investigation): the bundled tokenizer_config.json
+  // ships model_max_length as the HF-default "unbounded" sentinel (~1e30)
+  // instead of this model's real 512-token position-embedding limit, so
+  // transformers.js's always-on `truncation: true` never actually truncates —
+  // a long page crashes the model instead of degrading. These tests pin the
+  // fix against a minimal fake shaped like the real pipeline object, not the
+  // real (55MB, browser-only) model.
+
+  function fakePipe(maxPositionEmbeddings: number | undefined, tokenizerConfig: Record<string, unknown> | undefined) {
+    return {
+      tokenizer: tokenizerConfig !== undefined ? { _tokenizerConfig: tokenizerConfig } : undefined,
+      model: { config: { max_position_embeddings: maxPositionEmbeddings } },
+    };
+  }
+
+  it('overwrites an unbounded model_max_length with the model\'s real limit', () => {
+    const pipe = fakePipe(512, { model_max_length: 1e30 });
+    fixTokenizerMaxLength(pipe);
+    expect(pipe.tokenizer!._tokenizerConfig.model_max_length).toBe(512);
+  });
+
+  it('falls back to 512 when the model config has no max_position_embeddings', () => {
+    const pipe = fakePipe(undefined, { model_max_length: 1e30 });
+    fixTokenizerMaxLength(pipe);
+    expect(pipe.tokenizer!._tokenizerConfig.model_max_length).toBe(512);
+  });
+
+  it('does not throw when the tokenizer config is missing entirely', () => {
+    const pipe = fakePipe(512, undefined);
+    expect(() => fixTokenizerMaxLength(pipe)).not.toThrow();
   });
 });

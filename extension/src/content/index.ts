@@ -25,6 +25,7 @@ import { captureViewportContext, takeSnapshot } from './snapshot';
 import type { ContentRequest, ContentResponse } from '../types';
 import { assembleVisibleText, premask, spansToBoxes, type TextSegment } from '../detection/ner-track';
 import { detectDomPii } from '../detection/dom-track';
+import { applyMasks, removeMasks } from '../redaction/mask-overlay';
 
 declare global {
   interface Window {
@@ -86,6 +87,12 @@ if (!window.__sihContentInstalled) {
 
       case 'DOM_PII_REQUEST':
         return { type: 'DOM_PII_RESULT', boxes: detectDomPii(message.frame) };
+
+      case 'APPLY_MASK_REQUEST':
+        return { type: 'APPLY_MASK_RESULT', maskedCount: applyMasks(message.boxes) };
+
+      case 'REMOVE_MASK_REQUEST':
+        return { type: 'REMOVE_MASK_RESULT', removedCount: removeMasks() };
     }
   });
 
