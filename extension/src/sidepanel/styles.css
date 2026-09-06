@@ -130,6 +130,23 @@ body {
 /* Chat thread — the message list                                    */
 /* ---------------------------------------------------------------- */
 
+/* Pinned above the chat thread — the current capture, not interleaved in
+ * the scrolling message log. Bounded height since a full-page capture can
+ * be very tall; scrolls internally rather than pushing the composer/chat
+ * off-screen. */
+.capture-pane {
+  flex: 0 1 auto;
+  max-height: 42vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-bottom: 1px solid var(--rule);
+  padding: var(--pad) 0 0;
+}
+
+.capture-pane-empty {
+  padding: 20px var(--pad);
+}
+
 .chat-thread {
   flex: 1 1 auto;
   overflow-y: auto;

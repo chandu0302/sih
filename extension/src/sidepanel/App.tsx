@@ -158,15 +158,7 @@ export default function App() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  const [payload, setPayload] = useState<CapturePayload | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Which payload the detection pass has already run for — a ref, not
-   *  state, because it must not itself trigger a re-run when it changes. */
-  const detectRanFor = useRef<CapturePayload | null>(null);
-  /** Set by capture() right before the screenshot step, read once by the
-   *  detection effect so a pre-mask warning (computed before `payload` even
-   *  exists) still reaches the eventual capture message. */
-  const preMaskWarningRef = useRef<string | null>(null);
 
   /** 'capture' is the default — matches the reference interaction pattern
    *  (a single mode dropdown covering all three actions, not a separate
@@ -201,7 +193,13 @@ export default function App() {
 
   /**
    * Phase 3a's redact-before-capture design forces this into two
-   * service-worker round trips with a masking phase in between:
+   * service-worker round trips with a masking phase in between, followed by
+   * the three-track detection pass — all sequential in ONE async function
+   * now (previously split into capture() setting `payload` state, with a
+   * separate `useEffect` reacting to it for detection). Unified so this is
+   * directly awaitable-to-completion: auto-capture (see sendMessage) needs
+   * to know when a real CaptureMessage exists, not just when capture()'s own
+   * network round trips finish.
    *
    *   1. CAPTURE_SNAPSHOT_REQUEST — DOM read, no pixels yet, but the
    *      service worker also attaches CDP here and learns the full page's
@@ -217,23 +215,35 @@ export default function App() {
    *      screenshot, now that text PII is masked. The service worker
    *      unmasks and detaches the debugger immediately after, inside that
    *      call.
+   *   4. Decode the captured image, build the real coordinate frame, run all
+   *      three detection tracks concurrently (each independently
+   *      fault-tolerant — one failing degrades to whatever the others
+   *      found, never a blank result), merge, push one CaptureMessage.
+   *
+   * DEVIATION FROM THE BRIEF'S LITERAL PSEUDOCODE, worth flagging: the brief
+   * sketches `Promise.all([detectFaces, DOM_PII_REQUEST, NER_TEXT_REQUEST])`
+   * and only THEN sequentially runs classifyText + NER_BOX_REQUEST — which
+   * would block Track 3's model call until Track 2's (typically slower)
+   * face inference finishes, even though the two have no dependency on each
+   * other. Here each track is its own fully independent async pipeline,
+   * racing from the start. Lower total latency, same merged result, same
+   * fault isolation — a latency optimization, not a behavioral change.
    *
    * A pre-mask detection failure does not abort the capture — it degrades to
-   * "nothing masked" (see the per-step try/catch below). That degraded
-   * state is surfaced via the eventual capture message's detectWarning, not
-   * swallowed: an unmasked capture is the one failure mode this project
-   * cannot be silent about.
+   * "nothing masked," surfaced via the eventual capture message's
+   * detectWarning, not swallowed: an unmasked capture is the one failure
+   * mode this project cannot be silent about.
    *
    * If anything throws AFTER phase 1 succeeds (debugger now attached) but
-   * BEFORE phase 3 completes (which normally detaches it), the outer catch
-   * below fires a best-effort CAPTURE_ABORT_REQUEST so the debugger session
-   * — and the "this extension is debugging this browser" banner — never
-   * outlives one capture cycle on an unexpected failure.
+   * BEFORE phase 3 completes (which normally detaches it), the catch below
+   * fires a best-effort CAPTURE_ABORT_REQUEST so the debugger session — and
+   * the "this extension is debugging this browser" banner — never outlives
+   * one capture cycle on an unexpected failure.
    *
-   * Failures push an `error`-role chat message rather than a separate
-   * top-level error banner — one message-driven UI, not two.
+   * Failures push an `error`-role chat message and return null rather than a
+   * separate top-level error banner — one message-driven UI, not two.
    */
-  const capture = useCallback(async () => {
+  const capture = useCallback(async (): Promise<CaptureMessage | null> => {
     setBusy(true);
     const totalStart = performance.now();
     let attachedTabId: number | null = null;
@@ -247,7 +257,7 @@ export default function App() {
       if (!snapRes) throw new Error('No response from the extension worker.');
       if (!snapRes.ok) {
         pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: snapRes.error, hint: snapRes.hint });
-        return;
+        return null;
       }
       const { tabId, snapshot, pageWidth, pageHeight, injectMs, snapshotMs } = snapRes;
       attachedTabId = tabId; // debugger is attached from this point on
@@ -292,7 +302,7 @@ export default function App() {
         preMaskWarnings.push(`mask-apply: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      preMaskWarningRef.current = preMaskWarnings.length > 0 ? preMaskWarnings.join('; ') : null;
+      const preMaskWarning = preMaskWarnings.length > 0 ? preMaskWarnings.join('; ') : null;
 
       // --- Phase 3: pixels, now that text PII is masked ---------------
       const shotRes = (await chrome.runtime.sendMessage({
@@ -304,7 +314,7 @@ export default function App() {
       if (!shotRes) throw new Error('No response from the extension worker.');
       if (!shotRes.ok) {
         pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: shotRes.error, hint: shotRes.hint });
-        return;
+        return null;
       }
 
       // --- Phase 4: drift check, computed here instead of the service
@@ -319,7 +329,7 @@ export default function App() {
         console.warn('[SIH] viewport probe failed; drift unknown');
       }
 
-      setPayload({
+      const payload: CapturePayload = {
         screenshotDataUrl: shotRes.screenshotDataUrl,
         snapshot,
         pageWidth,
@@ -332,73 +342,22 @@ export default function App() {
           screenshotMs: shotRes.screenshotMs,
           totalMs: performance.now() - totalStart,
         },
-      });
-    } catch (err) {
-      pushMessage({
-        id: newId(),
-        role: 'error',
-        ts: Date.now(),
-        message: err instanceof Error ? err.message : String(err),
-        hint: 'Reload the extension from chrome://extensions and try again.',
-      });
+      };
 
-      // The debugger session was attached (phase 1 succeeded) but this
-      // capture never reached the point that normally detaches it — clean
-      // up so the debugging banner doesn't outlive this failed attempt.
-      if (attachedTabId !== null) {
-        chrome.runtime
-          .sendMessage({ type: 'CAPTURE_ABORT_REQUEST', tabId: attachedTabId })
-          .catch(() => undefined);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [pushMessage]);
-
-  /**
-   * The Phase-2 detection pass: all three tracks, run concurrently, each
-   * independently fault-tolerant, merged, timed. Decodes the captured image
-   * ONCE, upfront (needed for both the coordinate frame and face detection —
-   * previously each was derived separately, from a DOM <img> load event and
-   * from the face track's own fetch respectively; decoding once here removes
-   * that duplication and the render-timing dependency it carried).
-   *
-   * DEVIATION FROM THE BRIEF'S LITERAL PSEUDOCODE, worth flagging: the brief
-   * sketches `Promise.all([detectFaces, DOM_PII_REQUEST, NER_TEXT_REQUEST])`
-   * and only THEN sequentially runs classifyText + NER_BOX_REQUEST — which
-   * would block Track 3's model call until Track 2's (typically slower)
-   * face inference finishes, even though the two have no dependency on each
-   * other. Here each track is its own fully independent async pipeline,
-   * racing from the start; Track 3 internally sequences its own two-step
-   * text -> classify -> box chain. Lower total latency, same merged result,
-   * same fault isolation — this is a latency optimization, not a
-   * behavioral change from what the brief specifies.
-   */
-  useEffect(() => {
-    if (!payload) return;
-    if (detectRanFor.current === payload) return;
-    detectRanFor.current = payload;
-
-    let cancelled = false;
-
-    (async () => {
-      const totalStart = performance.now();
-
+      // --- Phase 5: decode + frame + three-track detection ------------
       let image: ImageBitmap;
       try {
         const blob = await (await fetch(payload.screenshotDataUrl)).blob();
         image = await createImageBitmap(blob);
       } catch (err) {
-        if (!cancelled) {
-          pushMessage({
-            id: newId(),
-            role: 'error',
-            ts: Date.now(),
-            message: 'Failed to decode the captured image.',
-            hint: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return;
+        pushMessage({
+          id: newId(),
+          role: 'error',
+          ts: Date.now(),
+          message: 'Failed to decode the captured image.',
+          hint: err instanceof Error ? err.message : String(err),
+        });
+        return null;
       }
 
       let frame: CoordinateFrame;
@@ -411,25 +370,24 @@ export default function App() {
           payload.snapshot.viewport.dpr,
         );
       } catch (err) {
-        if (!cancelled) {
-          pushMessage({
-            id: newId(),
-            role: 'error',
-            ts: Date.now(),
-            message: 'Failed to compute the coordinate frame for this capture.',
-            hint: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return;
+        pushMessage({
+          id: newId(),
+          role: 'error',
+          ts: Date.now(),
+          message: 'Failed to compute the coordinate frame for this capture.',
+          hint: err instanceof Error ? err.message : String(err),
+        });
+        return null;
       }
 
+      const detectStart = performance.now();
       let faceBoxes: DetectedBox[] = [];
       let domBoxes: DetectedBox[] = [];
       let nerBoxes: DetectedBox[] = [];
       let faceMs = 0;
       let domMs = 0;
       let nerMs = 0;
-      /** Phase 3b: set only if faces were found and blurring succeeded. */
+      /** Set only if faces were found and blurring succeeded. */
       let blurredDataUrl: string | null = null;
       const warnings: string[] = [];
 
@@ -498,21 +456,19 @@ export default function App() {
       })();
 
       await Promise.all([faceTrack, domTrack, nerTrack]);
-      if (cancelled) return;
 
       const raw = [...faceBoxes, ...domBoxes, ...nerBoxes];
       const merged = mergeDetections(raw);
       const manifest = buildRedactionManifest(merged);
 
-      // Pre-mask warnings from capture() are not dropped when this
-      // post-capture pass finds nothing wrong of its own — an unmasked-text
-      // warning matters even if faces/dom/ner all succeed.
+      // Pre-mask warnings are not dropped when the post-capture pass finds
+      // nothing wrong of its own — an unmasked-text warning matters even if
+      // faces/dom/ner all succeed.
       const ownWarning = warnings.length > 0 ? warnings.join('; ') : null;
-      const preWarning = preMaskWarningRef.current;
       const detectWarning =
-        preWarning && ownWarning ? `${preWarning}; ${ownWarning}` : (preWarning ?? ownWarning);
+        preMaskWarning && ownWarning ? `${preMaskWarning}; ${ownWarning}` : (preMaskWarning ?? ownWarning);
 
-      pushMessage({
+      const captureMsg: CaptureMessage = {
         id: newId(),
         role: 'capture',
         ts: Date.now(),
@@ -525,7 +481,7 @@ export default function App() {
           faceMs: Math.round(faceMs),
           domMs: Math.round(domMs),
           nerMs: Math.round(nerMs),
-          totalMs: Math.round(performance.now() - totalStart),
+          totalMs: Math.round(performance.now() - detectStart),
           faceCount: faceBoxes.length,
           domCount: domBoxes.length,
           nerCount: nerBoxes.length,
@@ -533,13 +489,32 @@ export default function App() {
           dupesCollapsed: raw.length - merged.length,
         },
         detectWarning,
-      });
-    })();
+      };
 
-    return () => {
-      cancelled = true;
-    };
-  }, [payload, pushMessage]);
+      pushMessage(captureMsg);
+      return captureMsg;
+    } catch (err) {
+      pushMessage({
+        id: newId(),
+        role: 'error',
+        ts: Date.now(),
+        message: err instanceof Error ? err.message : String(err),
+        hint: 'Reload the extension from chrome://extensions and try again.',
+      });
+
+      // The debugger session was attached (phase 1 succeeded) but this
+      // capture never reached the point that normally detaches it — clean
+      // up so the debugging banner doesn't outlive this failed attempt.
+      if (attachedTabId !== null) {
+        chrome.runtime
+          .sendMessage({ type: 'CAPTURE_ABORT_REQUEST', tabId: attachedTabId })
+          .catch(() => undefined);
+      }
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }, [pushMessage]);
 
   /** The most recent capture message — Ask/Agent messages operate against
    *  its image+manifest+frame. Re-capturing appends a new one, becoming the
@@ -553,26 +528,40 @@ export default function App() {
   }, [messages]);
 
   /**
-   * One chat turn: append the user's message, then dispatch to Ask
-   * (free-text Q&A via the Phase 4 server's /ask) or Agent (the existing
-   * Phase 5 one-scripted-action flow — plan, convert coordinates, execute).
+   * One chat turn: append the user's message, auto-capturing first if no
+   * capture exists yet (bug fix — capture used to be mandatory before you
+   * could Ask or run an Agent task at all; now it's optional, filled in
+   * automatically the first time you Send without one). Manual capture
+   * (Capture mode) remains available whenever you want fresher context,
+   * e.g. after an Agent action changes the page — auto-capture only fires
+   * when NONE exists yet, it does not re-capture on every turn.
    *
-   * ONE action per Agent turn, not a loop: this does not re-capture and does
-   * not chain further steps on `done`/`click`/etc.
+   * Then dispatches to Ask (free-text Q&A via the Phase 4 server's /ask) or
+   * Agent (the existing Phase 5 one-scripted-action flow — plan, convert
+   * coordinates, execute).
+   *
+   * ONE action per Agent turn, not a loop: this does not chain further steps
+   * on `done`/`click`/etc.
    */
   const sendMessage = useCallback(async () => {
     const text = inputText.trim();
-    if (mode === 'capture' || !text || !lastCapture || sending) return;
+    if (mode === 'capture' || !text || sending || busy) return;
 
     setInputText('');
     setSending(true);
     pushMessage({ id: newId(), role: 'user', ts: Date.now(), mode, text });
 
-    const image = lastCapture.sanitizedScreenshotDataUrl ?? lastCapture.payload.screenshotDataUrl;
-
     try {
+      let activeCapture = lastCapture;
+      if (!activeCapture) {
+        activeCapture = await capture(); // error message already pushed on failure
+        if (!activeCapture) return;
+      }
+
+      const image = activeCapture.sanitizedScreenshotDataUrl ?? activeCapture.payload.screenshotDataUrl;
+
       if (mode === 'ask') {
-        const result = await askQuestion({ image, manifest: lastCapture.manifest, question: text });
+        const result = await askQuestion({ image, manifest: activeCapture.manifest, question: text });
         if (!result.ok) {
           pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: result.error });
         } else {
@@ -581,7 +570,7 @@ export default function App() {
         return;
       }
 
-      const planned = await planAction({ image, manifest: lastCapture.manifest, task: text });
+      const planned = await planAction({ image, manifest: activeCapture.manifest, task: text });
       if (!planned.ok) {
         pushMessage({ id: newId(), role: 'error', ts: Date.now(), message: planned.error });
         return;
@@ -600,7 +589,7 @@ export default function App() {
           });
           return;
         }
-        toExecute = { kind: 'click', point: imagePointToCssPoint(cmd.target, lastCapture.frame) };
+        toExecute = { kind: 'click', point: imagePointToCssPoint(cmd.target, activeCapture.frame) };
       } else if (cmd.action === 'type') {
         toExecute = { kind: 'type', text: cmd.text ?? '' };
       } else if (cmd.action === 'scroll') {
@@ -617,7 +606,7 @@ export default function App() {
         return;
       }
 
-      const execRes = await sendToContent(lastCapture.payload.tabId, {
+      const execRes = await sendToContent(activeCapture.payload.tabId, {
         type: 'EXECUTE_ACTION_REQUEST',
         action: toExecute,
       });
@@ -649,7 +638,7 @@ export default function App() {
     } finally {
       setSending(false);
     }
-  }, [inputText, mode, lastCapture, sending, pushMessage]);
+  }, [inputText, mode, lastCapture, sending, busy, capture, pushMessage]);
 
   /** The composer has one primary button, not two — what it does depends on
    *  the selected mode (Capture takes no text; Ask/Agent send the typed
@@ -671,18 +660,29 @@ export default function App() {
         <h1 className="title">PrivacyLens</h1>
       </header>
 
-      <div className="chat-thread">
-        {messages.length === 0 && (
-          <p className="empty">
-            Click <code>Capture</code> below to sanitize the current page, then Ask a question
-            or give the Agent a task.
+      {/* Pinned above the chat, not interleaved in it: only the LATEST
+       * capture is shown here (bounded height, scrolls internally on a tall
+       * full-page image) — re-capturing replaces it. Ask/Agent messages
+       * always operate against whichever capture is showing here. */}
+      <div className="capture-pane">
+        {lastCapture ? (
+          <CaptureBubble message={lastCapture} />
+        ) : (
+          <p className="empty capture-pane-empty">
+            Not captured yet — Send will capture automatically, or switch to Capture mode.
           </p>
+        )}
+      </div>
+
+      <div className="chat-thread">
+        {messages.filter((msg) => msg.role !== 'capture').length === 0 && (
+          <p className="empty">Ask a question or give the Agent a task below.</p>
         )}
 
         {messages.map((msg) => {
           switch (msg.role) {
             case 'capture':
-              return <CaptureBubble key={msg.id} message={msg} />;
+              return null; // rendered once, pinned above — see capture-pane
             case 'user':
               return (
                 <div key={msg.id} className="msg msg-user">
@@ -779,16 +779,27 @@ export default function App() {
             type="button"
             className="send-btn"
             onClick={handlePrimaryAction}
-            disabled={
-              mode === 'capture' ? busy || sending : sending || !inputText.trim() || !lastCapture
-            }
+            disabled={mode === 'capture' ? busy || sending : sending || busy || !inputText.trim()}
           >
-            {mode === 'capture' ? (busy ? 'Capturing…' : 'Capture') : sending ? '…' : 'Send'}
+            {mode === 'capture'
+              ? busy
+                ? 'Capturing…'
+                : 'Capture'
+              : sending
+                ? busy
+                  ? 'Capturing…'
+                  : '…'
+                : 'Send'}
           </button>
         </div>
 
+        {/* Capture is optional, not required — Send auto-captures the first
+         * time if nothing has been captured yet (see sendMessage's doc
+         * comment). This hint explains that instead of blocking Send. */}
         {mode !== 'capture' && !lastCapture && (
-          <p className="composer-hint">Capture the page first to ask a question or run a task.</p>
+          <p className="composer-hint">
+            No capture yet — Send will capture the current page automatically.
+          </p>
         )}
       </div>
     </div>
