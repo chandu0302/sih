@@ -4,8 +4,8 @@
  * Same philosophy as face-detector.test.ts / onnx-loader.ts: the pipeline
  * itself needs a browser and is not mocked — a fake pipeline would only
  * assert a mock behaves like a mock. What's worth pinning is the pure logic
- * around it: the label map (all 17 model labels, the keep-set, the unknown
- * case) and the score-floor/offset/null-drop filtering.
+ * around it: the label map (all 17 model labels, the unknown case) and the
+ * score-floor/offset/null-drop filtering.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -43,10 +43,10 @@ describe('mapNerLabel', () => {
     expect(mapNerLabel('SECONDARY_ADDRESS')).toBe('ADDRESS');
   });
 
-  it('drops the CITY/STATE/ZIP_CODE keep-set — detected but not redacted', () => {
-    expect(mapNerLabel('CITY')).toBeNull();
-    expect(mapNerLabel('STATE')).toBeNull();
-    expect(mapNerLabel('ZIP_CODE')).toBeNull();
+  it('maps CITY/STATE/ZIP_CODE to ADDRESS — no keep-set (bug fix: state-of-residence is PII)', () => {
+    expect(mapNerLabel('CITY')).toBe('ADDRESS');
+    expect(mapNerLabel('STATE')).toBe('ADDRESS');
+    expect(mapNerLabel('ZIP_CODE')).toBe('ADDRESS');
   });
 
   it('drops an unrecognized label rather than guessing', () => {
@@ -83,12 +83,16 @@ describe('filterEntities', () => {
     expect(spans[0].word).toBe('प्रिया');
   });
 
-  it('drops entities whose label maps to null (keep-set or unknown)', () => {
-    const entities = [
-      { entity_group: 'CITY', score: 0.99, word: 'मुंबई' },
-      { entity_group: 'MYSTERY', score: 0.99, word: 'xyz' },
-    ];
+  it('drops entities whose label maps to null (unrecognized label)', () => {
+    const entities = [{ entity_group: 'MYSTERY', score: 0.99, word: 'xyz' }];
     expect(filterEntities(entities)).toHaveLength(0);
+  });
+
+  it('keeps CITY, mapped to ADDRESS — no keep-set (bug fix)', () => {
+    const entities = [{ entity_group: 'CITY', score: 0.99, word: 'मुंबई' }];
+    const spans = filterEntities(entities);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].piiType).toBe('ADDRESS');
   });
 
   it('maps the label and carries word/score through, offsets null', () => {

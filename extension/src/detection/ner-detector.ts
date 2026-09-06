@@ -187,13 +187,19 @@ export type { NerSpan };
 /**
  * Model entity_group -> our PiiType, or null to DROP.
  *
- * Pure: no model, no I/O. Two reasons a label maps to null, both
- * deliberate, not omissions:
- *   - CITY/STATE/ZIP_CODE are a KEEP-set — the model found them, but they are
- *     not redacted (an address's city is usually not sensitive on its own).
- *   - An unrecognized label means the model or its config drifted from what
- *     this file expects; guessing a PiiType for it would silently misclassify
- *     rather than surface the drift.
+ * Pure: no model, no I/O.
+ *
+ * CITY/STATE/ZIP_CODE were originally a KEEP-set (detected but not
+ * redacted, on the theory that an address's city/state is usually not
+ * sensitive on its own) — reversed after a live product-review question
+ * ("doesn't the state you live in count as PII?"): under a broad reading of
+ * India's DPDP Act or GDPR, geography tied to an identified person IS
+ * personal data, and over-redacting coarse geography costs nothing this
+ * project's rubric scores. They now join the other address components.
+ *
+ * An unrecognized label still maps to null — that case means the model or
+ * its config drifted from what this file expects; guessing a PiiType for it
+ * would silently misclassify rather than surface the drift.
  */
 export function mapNerLabel(entityGroup: string): PiiType | null {
   switch (entityGroup) {
@@ -216,11 +222,10 @@ export function mapNerLabel(entityGroup: string): PiiType | null {
     case 'BUILDING_NUMBER':
     case 'STREET_NAME':
     case 'SECONDARY_ADDRESS':
-      return 'ADDRESS';
     case 'CITY':
     case 'STATE':
     case 'ZIP_CODE':
-      return null; // keep-set: detected, NOT redacted
+      return 'ADDRESS';
     default:
       return null; // unknown label -> drop, don't guess
   }

@@ -36,6 +36,50 @@ const SKIP_TAGS = new Set([
  */
 const ID_HINT = /\b(aadhaar|aadhar|uidai|pan|ssn)\b/i;
 
+/**
+ * BUG FIX (found via live one-step-agent testing): a plain
+ * `<input id="full-name" placeholder="Enter your name">` matched neither
+ * ID_HINT nor any other rule, so it was never classified — and its typed
+ * VALUE is invisible to collectTextMatches/NER too (an input's live value
+ * is form-control internal state, never a DOM text node the tree walkers
+ * below can see). Net effect: a name typed into such a field was not
+ * redacted by ANY track. This regex, applied the same way ID_HINT already
+ * is, closes that specific gap by classifying the FIELD itself (so it's
+ * masked whether empty or filled, same as password fields).
+ *
+ * Narrow on purpose: matches "full-name", "Enter your name", "surname", but
+ * NOT "username"/"companyName"/"brandname" — same word-boundary reasoning
+ * ID_HINT already relies on (no boundary between concatenated words with no
+ * separator). A field with no name/ID-hinting attribute at all (e.g. a
+ * generic "Notes" textarea) remains a known, separate, undetected gap —
+ * documented, not silently left implicit.
+ */
+const NAME_HINT = /\b(name|surname)\b/i;
+
+/** HTML autocomplete tokens the spec defines for a person's name — checked
+ *  before HINT_ATTRS below since this is a near-certain semantic signal,
+ *  same precedence as the existing autocomplete="cc-*" check for CARD. */
+const NAME_AUTOCOMPLETE = /(^|\s)(name|given-name|family-name|additional-name|honorific-prefix)(\s|$)/i;
+
+/**
+ * BUG FIX #2 (found via live testing, right after the NAME fix above): a
+ * `<select id="state">` classifies correctly once this rule exists, but
+ * unlike a plain text input, its VALUE was never going to be catchable any
+ * other way — a closed <select>'s <option> elements are not laid out on the
+ * page at all (no box for Range.getClientRects() to return), so even
+ * fixing Track 3's CITY/STATE/ZIP_CODE keep-set (ner-detector.ts) could
+ * never have redacted this: NER might classify the text, but boxing it via
+ * a DOM Range structurally cannot work for an unlaid-out option. Attribute
+ * classification of the whole <select> element — same mechanism as
+ * password/name fields, boxing the visible closed-dropdown control itself
+ * — is the only mechanism that can actually work here.
+ */
+const ADDRESS_HINT = /\b(state|city|address|pincode|postal[\s-]?code|zip[\s-]?code)\b/i;
+
+/** HTML autocomplete tokens the spec defines for address components. */
+const ADDRESS_AUTOCOMPLETE =
+  /(^|\s)(address-line[123]|address-level[1234]|postal-code|country)(\s|$)/i;
+
 /** Attributes that carry a human-meaningful label for a field. */
 const HINT_ATTRS = ['aria-label', 'name', 'id', 'placeholder'] as const;
 
@@ -103,10 +147,14 @@ function classifyElement(el: HTMLElement): PiiType | null {
 
   const autocomplete = el.getAttribute('autocomplete');
   if (autocomplete && /(^|\s)cc-/i.test(autocomplete)) return 'CARD';
+  if (autocomplete && NAME_AUTOCOMPLETE.test(autocomplete)) return 'NAME';
+  if (autocomplete && ADDRESS_AUTOCOMPLETE.test(autocomplete)) return 'ADDRESS';
 
   for (const attr of HINT_ATTRS) {
     const value = el.getAttribute(attr);
     if (value && ID_HINT.test(value)) return 'ID_NUMBER';
+    if (value && NAME_HINT.test(value)) return 'NAME';
+    if (value && ADDRESS_HINT.test(value)) return 'ADDRESS';
   }
 
   return null;
@@ -115,6 +163,8 @@ function classifyElement(el: HTMLElement): PiiType | null {
 function subtypeForAttributeHit(el: HTMLElement, type: PiiType): string {
   if (type === 'PASSWORD') return 'password_field';
   if (type === 'CARD') return 'cc_number_field';
+  if (type === 'NAME') return 'name_field';
+  if (type === 'ADDRESS') return 'address_field';
 
   for (const attr of HINT_ATTRS) {
     const match = el.getAttribute(attr)?.match(ID_HINT);

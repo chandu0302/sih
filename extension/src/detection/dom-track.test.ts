@@ -16,7 +16,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createCoordinateFrame } from '../lib/coords';
+import { createFullPageFrame } from '../lib/coords';
 import type { DetectedBox, ViewportContext } from '../types';
 import { detectDomPii } from './dom-track';
 
@@ -115,7 +115,7 @@ const VIEWPORT: ViewportContext = {
   url: 'https://example.test/form',
 };
 
-const FRAME = createCoordinateFrame(VIEWPORT, 1000, 800);
+const FRAME = createFullPageFrame(VIEWPORT.clientWidth, VIEWPORT.clientHeight, 1000, 800, VIEWPORT.dpr);
 
 function detect(html: string): DetectedBox[] {
   document.body.innerHTML = html;
@@ -194,6 +194,83 @@ describe('attribute matching — card fields', () => {
 
   it('does not flag unrelated autocomplete tokens', () => {
     expect(detect('<input autocomplete="street-address">')).toHaveLength(0);
+  });
+});
+
+describe('attribute matching — name fields (bug fix: typed names were not redacted)', () => {
+  it('detects a plain name field via id + placeholder, empty or filled', () => {
+    const empty = ofType(detect('<input id="full-name" placeholder="Enter your name">'), 'NAME');
+    expect(empty).toHaveLength(1);
+    expect(empty[0].subtype).toBe('name_field');
+    expect(empty[0].confidence).toBeGreaterThan(0.9);
+
+    const filled = ofType(
+      detect('<input id="full-name" placeholder="Enter your name" value="Priya Sharma">'),
+      'NAME',
+    );
+    expect(filled).toHaveLength(1);
+  });
+
+  it('records NO text for a name field — same rule as password fields', () => {
+    const boxes = detect('<input id="full-name" value="Priya Sharma">');
+    expect(ofType(boxes, 'NAME')[0].text).toBeUndefined();
+    expect(JSON.stringify(boxes)).not.toContain('Priya Sharma');
+  });
+
+  it('detects autocomplete="name"/"given-name"/"family-name"', () => {
+    expect(ofType(detect('<input autocomplete="name">'), 'NAME')).toHaveLength(1);
+    expect(ofType(detect('<input autocomplete="given-name">'), 'NAME')).toHaveLength(1);
+    expect(ofType(detect('<input autocomplete="family-name">'), 'NAME')).toHaveLength(1);
+  });
+
+  it('detects "surname"', () => {
+    expect(ofType(detect('<input aria-label="Surname">'), 'NAME')).toHaveLength(1);
+  });
+
+  it('does NOT flag "username" — a login handle is not this category', () => {
+    expect(detect('<input id="username" placeholder="Username">')).toHaveLength(0);
+  });
+
+  it('does NOT flag unrelated fields containing "name" with no word boundary', () => {
+    expect(detect('<input id="companyName">')).toHaveLength(0);
+    expect(detect('<input id="brandname">')).toHaveLength(0);
+  });
+});
+
+describe('attribute matching — address fields, incl. <select> (bug fix #2)', () => {
+  it('classifies a <select id="state"> as ADDRESS — the whole closed dropdown, not its options', () => {
+    // The real repro: a closed <select>'s <option>s are not laid out on the
+    // page at all, so NER-then-Range-boxing structurally cannot mask this —
+    // only attribute classification of the whole element can.
+    const boxes = detect(`
+      <select id="state">
+        <option>Andhra Pradesh</option>
+        <option>Karnataka</option>
+      </select>
+    `);
+    const hits = ofType(boxes, 'ADDRESS');
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0].subtype).toBe('address_field');
+    expect(hits[0].text).toBeUndefined();
+  });
+
+  it('detects "city", "address", "pincode", "postal code", "zip code" hints', () => {
+    expect(ofType(detect('<input id="city">'), 'ADDRESS')).toHaveLength(1);
+    expect(ofType(detect('<input aria-label="Address">'), 'ADDRESS')).toHaveLength(1);
+    expect(ofType(detect('<input placeholder="Enter pincode">'), 'ADDRESS')).toHaveLength(1);
+    expect(ofType(detect('<input placeholder="Postal code">'), 'ADDRESS')).toHaveLength(1);
+    expect(ofType(detect('<input placeholder="Zip code">'), 'ADDRESS')).toHaveLength(1);
+  });
+
+  it('detects autocomplete address-line/address-level/postal-code tokens', () => {
+    expect(ofType(detect('<input autocomplete="address-line1">'), 'ADDRESS')).toHaveLength(1);
+    expect(ofType(detect('<select autocomplete="address-level1">'), 'ADDRESS')).toHaveLength(1);
+    expect(ofType(detect('<input autocomplete="postal-code">'), 'ADDRESS')).toHaveLength(1);
+  });
+
+  it('does NOT flag "estate" — no word boundary before "state"', () => {
+    expect(detect('<input id="estate-agent-notes">')).toHaveLength(0);
   });
 });
 
