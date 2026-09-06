@@ -132,6 +132,46 @@ function copyTransformersOrtBinaries() {
   console.log(`[ort-tfjs] staged ${ORT_TFJS_BINARIES.length} wasm binaries -> public/ort-tfjs/`);
 }
 
+/**
+ * MeridianPII NER model (Track 3) — unlike the ORT binaries above, this is
+ * NOT a build failure if missing: the build succeeds fine either way (Track
+ * 1 DOM/regex and Track 2 face detection are unaffected), and each
+ * detection track is independently fault-tolerant by design (App.tsx's
+ * detection effect). But a silently-dead Track 3 is exactly the kind of gap
+ * a fresh clone hits without realizing it — confirmed during the clean-clone
+ * reproducibility audit: `npm run build` succeeds with this model absent,
+ * with no signal at all that NER detection won't work until someone notices
+ * 0 name/address hits at runtime. Warn loudly instead of failing, since
+ * Track 3 missing is a real, usable, degraded state — not a broken build.
+ */
+const NER_MODEL_DIR = 'public/models/plingampally/meridianpii-hi-v2';
+const NER_MODEL_FILES = [
+  'config.json',
+  'tokenizer.json',
+  'tokenizer_config.json',
+  'special_tokens_map.json',
+  'onnx/model_quantized.onnx',
+];
+
+function checkNerModel() {
+  const dir = resolve(root, NER_MODEL_DIR);
+  const missing = NER_MODEL_FILES.filter((file) => !existsSync(resolve(dir, file)));
+
+  if (missing.length === 0) {
+    console.log('[ner-model] present — Track 3 (NER) will load.');
+    return;
+  }
+
+  console.warn(
+    `\n[ner-model] WARNING: ${NER_MODEL_DIR} is missing ${missing.length}/${NER_MODEL_FILES.length} file(s):\n` +
+      missing.map((file) => `  - ${file}`).join('\n') +
+      `\n\nThe build will still succeed and the extension will still load — Track 3 ` +
+      `(name/address NER detection) will just silently find nothing. Run:\n` +
+      `  npm run fetch-ner-model\n` +
+      `then rebuild. See README.md's "Models" section for the manual fallback.\n`,
+  );
+}
+
 /** Single-file bundle for the worker and content script. */
 const singleFile = (entry, outSubdir, fileName, format) => ({
   root,
@@ -183,6 +223,7 @@ await build(singleFile('src/content/index.ts', 'content', 'index.js', 'iife'));
 
 copyOrtBinaries();
 copyTransformersOrtBinaries();
+checkNerModel();
 
 cpSync(resolve(root, 'manifest.json'), resolve(outDir, 'manifest.json'));
 if (existsSync(resolve(root, 'public'))) {
