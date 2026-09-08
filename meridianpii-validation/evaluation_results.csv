@@ -1,0 +1,42 @@
+﻿id,category,result,expected_text,expected_label,detected_text,detected_label,confidence
+P01,positive,TP,rahul,GIVEN_NAME,rahul,GIVEN_NAME,0.4792
+P01,positive,TP,sharma,SURNAME,sharma,SURNAME,0.4262
+P02,positive,TP,priya,GIVEN_NAME,priya,GIVEN_NAME,0.4884
+P02,positive,TP,reddy,SURNAME,reddy,SURNAME,0.4245
+P03,positive,TP,9876543210,PHONE,9876543210,PHONE,0.5518
+P04,positive,TP,9123456789,PHONE,9123456789,PHONE,0.5515
+P05,positive,TP,25,BUILDING_NUMBER,25,BUILDING_NUMBER,0.2747
+P05,positive,TP,mg road,STREET_NAME,mg road,STREET_NAME,0.3642
+P05,positive,TP,hyderabad,CITY,hyderabad,CITY,0.3657
+P06,positive,TP,42,BUILDING_NUMBER,42,BUILDING_NUMBER,0.2813
+P06,positive,TP,park street,STREET_NAME,park street,STREET_NAME,0.3648
+P06,positive,TP,kolkata,CITY,kolkata,CITY,0.341
+P07,positive,TP,mumbai,CITY,mumbai,CITY,0.3725
+P07,positive,TP,hyderabad,CITY,hyderabad,CITY,0.371
+P08,positive,TP,500001,ZIP_CODE,500001,ZIP_CODE,0.2731
+P08,positive,FP,,,telangana,CITY,0.3544
+P08,positive,FN,telangana,STATE,,,
+P09,positive,TP,p1234567,PASSPORT,p1234567,PASSPORT,0.2562
+P10,positive,TP,123456789012,BANK_ACCOUNT,123456789012,BANK_ACCOUNT,0.3642
+E01,edge,TP,98765 43210,PHONE,98765 43210,PHONE,0.5513
+E02,edge,TP,rahul,GIVEN_NAME,rahul,GIVEN_NAME,0.4668
+E03,edge,TP,10,BUILDING_NUMBER,10,BUILDING_NUMBER,0.2317
+E03,edge,TP,jubilee hills,STREET_NAME,jubilee hills,STREET_NAME,0.3631
+E03,edge,TP,hyderabad,CITY,hyderabad,CITY,0.3615
+E04,edge,FP,,,telangana,CITY,0.3441
+E04,edge,FN,telangana,STATE,,,
+M01,multi_pii,TP,rahul,GIVEN_NAME,rahul,GIVEN_NAME,0.4772
+M01,multi_pii,TP,sharma,SURNAME,sharma,SURNAME,0.4251
+M01,multi_pii,TP,25,BUILDING_NUMBER,25,BUILDING_NUMBER,0.2789
+M01,multi_pii,TP,mg road,STREET_NAME,mg road,STREET_NAME,0.365
+M01,multi_pii,TP,hyderabad,CITY,hyderabad,CITY,0.3664
+M01,multi_pii,TP,9876543210,PHONE,9876543210,PHONE,0.5521
+M02,multi_pii,TP,priya,GIVEN_NAME,priya,GIVEN_NAME,0.488
+M02,multi_pii,TP,reddy,SURNAME,reddy,SURNAME,0.4226
+M02,multi_pii,TP,42,BUILDING_NUMBER,42,BUILDING_NUMBER,0.2821
+M02,multi_pii,TP,park street,STREET_NAME,park street,STREET_NAME,0.3649
+M02,multi_pii,TP,kolkata,CITY,kolkata,CITY,0.3457
+M02,multi_pii,TP,p1234567,PASSPORT,p1234567,PASSPORT,0.2564
+M03,multi_pii,TP,rahul,GIVEN_NAME,rahul,GIVEN_NAME,0.479
+M03,multi_pii,TP,sharma,SURNAME,sharma,SURNAME,0.4252
+M03,multi_pii,TP,9876543210,PHONE,9876543210,PHONE,0.5528

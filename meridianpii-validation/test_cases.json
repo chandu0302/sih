@@ -1,0 +1,292 @@
+[
+  {
+    "id": "P01",
+    "category": "positive",
+    "type": "name",
+    "language": "english",
+    "text": "My name is Rahul Sharma.",
+    "expected": [
+      {"text": "Rahul", "label": "GIVEN_NAME"},
+      {"text": "Sharma", "label": "SURNAME"}
+    ]
+  },
+  {
+    "id": "P02",
+    "category": "positive",
+    "type": "name",
+    "language": "english",
+    "text": "Priya Reddy is my colleague.",
+    "expected": [
+      {"text": "Priya", "label": "GIVEN_NAME"},
+      {"text": "Reddy", "label": "SURNAME"}
+    ]
+  },
+  {
+    "id": "P03",
+    "category": "positive",
+    "type": "phone",
+    "language": "english",
+    "text": "You can contact me at 9876543210.",
+    "expected": [
+      {"text": "9876543210", "label": "PHONE"}
+    ]
+  },
+  {
+    "id": "P04",
+    "category": "positive",
+    "type": "phone",
+    "language": "hinglish",
+    "text": "Mera number 9123456789 hai.",
+    "expected": [
+      {"text": "9123456789", "label": "PHONE"}
+    ]
+  },
+  {
+    "id": "P05",
+    "category": "positive",
+    "type": "address",
+    "language": "english",
+    "text": "I live at 25 MG Road, Hyderabad.",
+    "expected": [
+      {"text": "25", "label": "BUILDING_NUMBER"},
+      {"text": "MG Road", "label": "STREET_NAME"},
+      {"text": "Hyderabad", "label": "CITY"}
+    ]
+  },
+  {
+    "id": "P06",
+    "category": "positive",
+    "type": "address",
+    "language": "english",
+    "text": "My address is 42 Park Street, Kolkata.",
+    "expected": [
+      {"text": "42", "label": "BUILDING_NUMBER"},
+      {"text": "Park Street", "label": "STREET_NAME"},
+      {"text": "Kolkata", "label": "CITY"}
+    ]
+  },
+  {
+    "id": "P07",
+    "category": "positive",
+    "type": "location",
+    "language": "english",
+    "text": "I moved from Mumbai to Hyderabad.",
+    "expected": [
+      {"text": "Mumbai", "label": "CITY"},
+      {"text": "Hyderabad", "label": "CITY"}
+    ]
+  },
+  {
+    "id": "P08",
+    "category": "positive",
+    "type": "location",
+    "language": "english",
+    "text": "My state is Telangana and my PIN code is 500001.",
+    "expected": [
+      {"text": "Telangana", "label": "STATE"},
+      {"text": "500001", "label": "ZIP_CODE"}
+    ]
+  },
+  {
+    "id": "P09",
+    "category": "positive",
+    "type": "passport",
+    "language": "english",
+    "text": "My passport number is P1234567.",
+    "expected": [
+      {"text": "P1234567", "label": "PASSPORT"}
+    ]
+  },
+  {
+    "id": "P10",
+    "category": "positive",
+    "type": "bank_account",
+    "language": "english",
+    "text": "My bank account number is 123456789012.",
+    "expected": [
+      {"text": "123456789012", "label": "BANK_ACCOUNT"}
+    ]
+  },
+
+  {
+    "id": "S01",
+    "category": "structured",
+    "type": "aadhaar",
+    "language": "english",
+    "text": "Aadhaar number: 1234 5678 9012.",
+    "expected": [],
+    "structured_type": "AADHAAR"
+  },
+  {
+    "id": "S02",
+    "category": "structured",
+    "type": "pan",
+    "language": "english",
+    "text": "PAN number: ABCDE1234F.",
+    "expected": [],
+    "structured_type": "PAN"
+  },
+  {
+    "id": "S03",
+    "category": "structured",
+    "type": "email",
+    "language": "english",
+    "text": "Email me at rahul@example.com.",
+    "expected": [],
+    "structured_type": "EMAIL"
+  },
+  {
+    "id": "S04",
+    "category": "structured",
+    "type": "url",
+    "language": "english",
+    "text": "Visit https://example.com for more information.",
+    "expected": [],
+    "structured_type": "URL"
+  },
+  {
+    "id": "S05",
+    "category": "structured",
+    "type": "ifsc",
+    "language": "english",
+    "text": "The IFSC code is SBIN0001234.",
+    "expected": [],
+    "structured_type": "IFSC"
+  },
+  {
+    "id": "S06",
+    "category": "structured",
+    "type": "gstin",
+    "language": "english",
+    "text": "GSTIN: 29ABCDE1234F1Z5.",
+    "expected": [],
+    "structured_type": "GSTIN"
+  },
+
+  {
+    "id": "N01",
+    "category": "negative",
+    "type": "normal_text",
+    "language": "english",
+    "text": "The weather is pleasant today.",
+    "expected": []
+  },
+  {
+    "id": "N02",
+    "category": "negative",
+    "type": "normal_text",
+    "language": "english",
+    "text": "I went to the library yesterday.",
+    "expected": []
+  },
+  {
+    "id": "N03",
+    "category": "negative",
+    "type": "number",
+    "language": "english",
+    "text": "The train leaves at 10:30.",
+    "expected": []
+  },
+  {
+    "id": "N04",
+    "category": "negative",
+    "type": "number",
+    "language": "english",
+    "text": "There are 25 students in the classroom.",
+    "expected": []
+  },
+ {
+  "id": "N05",
+  "category": "negative",
+  "type": "normal_text",
+  "language": "english",
+  "text": "The library opens at nine in the morning.",
+  "expected": []
+},
+
+  {
+    "id": "E01",
+    "category": "edge",
+    "type": "phone",
+    "language": "english",
+    "text": "Call me: 98765 43210.",
+    "expected": [
+      {"text": "98765 43210", "label": "PHONE"}
+    ]
+  },
+  {
+    "id": "E02",
+    "category": "edge",
+    "type": "name",
+    "language": "hinglish",
+    "text": "Rahul bhai kal office aa raha hai.",
+    "expected": [
+      {"text": "Rahul", "label": "GIVEN_NAME"}
+    ]
+  },
+  {
+    "id": "E03",
+    "category": "edge",
+    "type": "address",
+    "language": "english",
+    "text": "I stay near 10 Jubilee Hills, Hyderabad.",
+    "expected": [
+      {"text": "10", "label": "BUILDING_NUMBER"},
+      {"text": "Jubilee Hills", "label": "STREET_NAME"},
+      {"text": "Hyderabad", "label": "CITY"}
+    ]
+  },
+  {
+    "id": "E04",
+    "category": "edge",
+    "type": "location",
+    "language": "english",
+    "text": "I am currently in Telangana.",
+    "expected": [
+      {"text": "Telangana", "label": "STATE"}
+    ]
+  },
+
+  {
+    "id": "M01",
+    "category": "multi_pii",
+    "type": "multiple",
+    "language": "english",
+    "text": "Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",
+    "expected": [
+      {"text": "Rahul", "label": "GIVEN_NAME"},
+      {"text": "Sharma", "label": "SURNAME"},
+      {"text": "25", "label": "BUILDING_NUMBER"},
+      {"text": "MG Road", "label": "STREET_NAME"},
+      {"text": "Hyderabad", "label": "CITY"},
+      {"text": "9876543210", "label": "PHONE"}
+    ]
+  },
+  {
+    "id": "M02",
+    "category": "multi_pii",
+    "type": "multiple",
+    "language": "english",
+    "text": "Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",
+    "expected": [
+      {"text": "Priya", "label": "GIVEN_NAME"},
+      {"text": "Reddy", "label": "SURNAME"},
+      {"text": "42", "label": "BUILDING_NUMBER"},
+      {"text": "Park Street", "label": "STREET_NAME"},
+      {"text": "Kolkata", "label": "CITY"},
+      {"text": "P1234567", "label": "PASSPORT"}
+    ]
+  },
+  {
+    "id": "M03",
+    "category": "multi_pii",
+    "type": "multiple",
+    "language": "hinglish",
+    "text": "Mera naam Rahul Sharma hai aur mera number 9876543210 hai.",
+    "expected": [
+      {"text": "Rahul", "label": "GIVEN_NAME"},
+      {"text": "Sharma", "label": "SURNAME"},
+      {"text": "9876543210", "label": "PHONE"}
+    ]
+  }
+]
