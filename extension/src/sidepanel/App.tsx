@@ -527,6 +527,16 @@ export default function App() {
     return null;
   }, [messages]);
 
+  /** The capture pane starts collapsed behind a "Sharing this screen" card
+   *  (see SharingCard below) — the full image/overlay/metrics view (still
+   *  CaptureBubble, unchanged) only renders once the card is clicked. Reset
+   *  to collapsed on every NEW capture, keyed by id, so re-capturing doesn't
+   *  silently carry an expanded state over to a page you haven't reviewed. */
+  const [captureExpanded, setCaptureExpanded] = useState(false);
+  useEffect(() => {
+    setCaptureExpanded(false);
+  }, [lastCapture?.id]);
+
   /**
    * One chat turn: append the user's message, auto-capturing first if no
    * capture exists yet (bug fix — capture used to be mandatory before you
@@ -660,20 +670,6 @@ export default function App() {
         <h1 className="title">Pixels</h1>
       </header>
 
-      {/* Pinned above the chat, not interleaved in it: only the LATEST
-       * capture is shown here (bounded height, scrolls internally on a tall
-       * full-page image) — re-capturing replaces it. Ask/Agent messages
-       * always operate against whichever capture is showing here. */}
-      <div className="capture-pane">
-        {lastCapture ? (
-          <CaptureBubble message={lastCapture} />
-        ) : (
-          <p className="empty capture-pane-empty">
-            Not captured yet — Send will capture automatically, or switch to Capture mode.
-          </p>
-        )}
-      </div>
-
       <div className="chat-thread">
         {messages.filter((msg) => msg.role !== 'capture').length === 0 && (
           <p className="empty">Ask a question or give the Agent a task below.</p>
@@ -682,7 +678,7 @@ export default function App() {
         {messages.map((msg) => {
           switch (msg.role) {
             case 'capture':
-              return null; // rendered once, pinned above — see capture-pane
+              return null; // rendered once, above the composer — see capture-pane
             case 'user':
               return (
                 <div key={msg.id} className="msg msg-user">
@@ -717,6 +713,22 @@ export default function App() {
 
         <div ref={threadEndRef} />
       </div>
+
+      {/* Sits directly above the composer, not pinned above the whole chat —
+       * renders nothing at all until there's actually a capture (no empty
+       * placeholder box). Collapsed behind a "Sharing this screen" card by
+       * default; the full image/overlay/metrics view (CaptureBubble,
+       * unchanged) only mounts once you click it. */}
+      {lastCapture && (
+        <div className="capture-pane">
+          <SharingCard
+            message={lastCapture}
+            expanded={captureExpanded}
+            onToggle={() => setCaptureExpanded((v) => !v)}
+          />
+          {captureExpanded && <CaptureBubble message={lastCapture} />}
+        </div>
+      )}
 
       <div className="composer">
         <div className="composer-row">
@@ -803,6 +815,54 @@ export default function App() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Collapsed-by-default "what's being shared" card, in the same spirit as
+ * Gemini's in-panel share indicator — glanceable, click to expand into the
+ * full CaptureBubble below it. Purely a disclosure control: everything it
+ * shows was already computed by the redact-before-send capture pipeline,
+ * and expanding it doesn't re-run or re-send anything.
+ */
+function SharingCard({
+  message,
+  expanded,
+  onToggle,
+}: {
+  message: CaptureMessage;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const url = message.payload.snapshot.viewport.url;
+  let host = url;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // Malformed/non-http URL (rare) — fall back to showing it verbatim.
+  }
+
+  const total = message.detections.length;
+
+  return (
+    <button
+      type="button"
+      className="sharing-card"
+      onClick={onToggle}
+      aria-expanded={expanded}
+    >
+      <span className="sharing-card-icon" aria-hidden="true">⇪</span>
+      <span className="sharing-card-text">
+        <span className="sharing-card-title">Sharing this screen</span>
+        <span className="sharing-card-detail">
+          {host}
+          {total > 0
+            ? ` · ${total} region${total === 1 ? '' : 's'} redacted on-device`
+            : ' · nothing detected as PII'}
+        </span>
+      </span>
+      <span className="sharing-card-chevron" aria-hidden="true">{expanded ? '▲' : '▼'}</span>
+    </button>
   );
 }
 
