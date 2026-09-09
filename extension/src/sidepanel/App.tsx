@@ -666,7 +666,6 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <p className="eyebrow">SIH 26171</p>
         <h1 className="title">Pixels</h1>
       </header>
 

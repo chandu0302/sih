@@ -76,15 +76,6 @@ body {
   flex: 0 0 auto;
 }
 
-.eyebrow {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  margin: 0 0 2px;
-}
-
 .title {
   font-size: 15px;
   font-weight: 600;
