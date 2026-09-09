@@ -1,0 +1,9 @@
+{
+    "threshold": 0.15,
+    "true_positive": 37,
+    "false_positive": 2,
+    "false_negative": 2,
+    "precision": 0.9487179487179487,
+    "recall": 0.9487179487179487,
+    "f1": 0.9487179487179487
+}

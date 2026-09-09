@@ -1,0 +1,51 @@
+﻿id,category,type,language,input,detected_text,detected_label,confidence,threshold
+P01,positive,name,english,My name is Rahul Sharma.,Rahul,GIVEN_NAME,0.4792,0.15
+P01,positive,name,english,My name is Rahul Sharma.,Sharma,SURNAME,0.4262,0.15
+P02,positive,name,english,Priya Reddy is my colleague.,Priya,GIVEN_NAME,0.4884,0.15
+P02,positive,name,english,Priya Reddy is my colleague.,Reddy,SURNAME,0.4245,0.15
+P03,positive,phone,english,You can contact me at 9876543210.,9876543210,PHONE,0.5518,0.15
+P04,positive,phone,hinglish,Mera number 9123456789 hai.,9123456789,PHONE,0.5515,0.15
+P05,positive,address,english,"I live at 25 MG Road, Hyderabad.",25,BUILDING_NUMBER,0.2747,0.15
+P05,positive,address,english,"I live at 25 MG Road, Hyderabad.",MG Road,STREET_NAME,0.3642,0.15
+P05,positive,address,english,"I live at 25 MG Road, Hyderabad.",Hyderabad,CITY,0.3657,0.15
+P06,positive,address,english,"My address is 42 Park Street, Kolkata.",42,BUILDING_NUMBER,0.2813,0.15
+P06,positive,address,english,"My address is 42 Park Street, Kolkata.",Park Street,STREET_NAME,0.3648,0.15
+P06,positive,address,english,"My address is 42 Park Street, Kolkata.",Kolkata,CITY,0.3410,0.15
+P07,positive,location,english,I moved from Mumbai to Hyderabad.,Mumbai,CITY,0.3725,0.15
+P07,positive,location,english,I moved from Mumbai to Hyderabad.,Hyderabad,CITY,0.3710,0.15
+P08,positive,location,english,My state is Telangana and my PIN code is 500001.,Telangana,CITY,0.3544,0.15
+P08,positive,location,english,My state is Telangana and my PIN code is 500001.,500001,ZIP_CODE,0.2731,0.15
+P09,positive,passport,english,My passport number is P1234567.,P1234567,PASSPORT,0.2562,0.15
+P10,positive,bank_account,english,My bank account number is 123456789012.,123456789012,BANK_ACCOUNT,0.3642,0.15
+S01,structured,aadhaar,english,Aadhaar number: 1234 5678 9012.,1234 5678 9012,PHONE,0.5588,0.15
+S02,structured,pan,english,PAN number: ABCDE1234F.,,NONE,,0.15
+S03,structured,email,english,Email me at rahul@example.com.,rahul,GIVEN_NAME,0.4139,0.15
+S04,structured,url,english,Visit https://example.com for more information.,,NONE,,0.15
+S05,structured,ifsc,english,The IFSC code is SBIN0001234.,SBIN0001234,GOVERNMENT_ID,0.2658,0.15
+S06,structured,gstin,english,GSTIN: 29ABCDE1234F1Z5.,1234F1Z5,GOVERNMENT_ID,0.2183,0.15
+N01,negative,normal_text,english,The weather is pleasant today.,,NONE,,0.15
+N02,negative,normal_text,english,I went to the library yesterday.,,NONE,,0.15
+N03,negative,number,english,The train leaves at 10:30.,,NONE,,0.15
+N04,negative,number,english,There are 25 students in the classroom.,,NONE,,0.15
+N05,negative,normal_text,english,The library opens at nine in the morning.,,NONE,,0.15
+E01,edge,phone,english,Call me: 98765 43210.,98765 43210,PHONE,0.5513,0.15
+E02,edge,name,hinglish,Rahul bhai kal office aa raha hai.,Rahul,GIVEN_NAME,0.4668,0.15
+E03,edge,address,english,"I stay near 10 Jubilee Hills, Hyderabad.",10,BUILDING_NUMBER,0.2317,0.15
+E03,edge,address,english,"I stay near 10 Jubilee Hills, Hyderabad.",Jubilee Hills,STREET_NAME,0.3631,0.15
+E03,edge,address,english,"I stay near 10 Jubilee Hills, Hyderabad.",Hyderabad,CITY,0.3615,0.15
+E04,edge,location,english,I am currently in Telangana.,Telangana,CITY,0.3441,0.15
+M01,multi_pii,multiple,english,"Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",Rahul,GIVEN_NAME,0.4772,0.15
+M01,multi_pii,multiple,english,"Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",Sharma,SURNAME,0.4251,0.15
+M01,multi_pii,multiple,english,"Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",25,BUILDING_NUMBER,0.2789,0.15
+M01,multi_pii,multiple,english,"Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",MG Road,STREET_NAME,0.3650,0.15
+M01,multi_pii,multiple,english,"Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",Hyderabad,CITY,0.3664,0.15
+M01,multi_pii,multiple,english,"Rahul Sharma lives at 25 MG Road, Hyderabad and can be reached at 9876543210.",9876543210,PHONE,0.5521,0.15
+M02,multi_pii,multiple,english,"Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",Priya,GIVEN_NAME,0.4880,0.15
+M02,multi_pii,multiple,english,"Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",Reddy,SURNAME,0.4226,0.15
+M02,multi_pii,multiple,english,"Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",42,BUILDING_NUMBER,0.2821,0.15
+M02,multi_pii,multiple,english,"Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",Park Street,STREET_NAME,0.3649,0.15
+M02,multi_pii,multiple,english,"Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",Kolkata,CITY,0.3457,0.15
+M02,multi_pii,multiple,english,"Priya Reddy lives at 42 Park Street, Kolkata. Her passport is P1234567.",P1234567,PASSPORT,0.2564,0.15
+M03,multi_pii,multiple,hinglish,Mera naam Rahul Sharma hai aur mera number 9876543210 hai.,Rahul,GIVEN_NAME,0.4790,0.15
+M03,multi_pii,multiple,hinglish,Mera naam Rahul Sharma hai aur mera number 9876543210 hai.,Sharma,SURNAME,0.4252,0.15
+M03,multi_pii,multiple,hinglish,Mera naam Rahul Sharma hai aur mera number 9876543210 hai.,9876543210,PHONE,0.5528,0.15
